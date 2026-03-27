@@ -10,7 +10,7 @@ from smelt.quantize import (
 )
 
 
-def test_roundtrip_pack_unpack():
+def test_roundtrip():
     """Pack then unpack recovers ternary weights exactly."""
     torch.manual_seed(0)
     w_t, _ = quantize_ternary(torch.randn(32, 64))
@@ -18,7 +18,7 @@ def test_roundtrip_pack_unpack():
     assert (w_t == unpack_tl1(packed, n_pairs, n_padded, 32, 64)).all()
 
 
-def test_activation_reconstruction():
+def test_reconstruction():
     """Dequantized int8 activations approximate original."""
     torch.manual_seed(1)
     x = torch.randn(4, 32) * 10
@@ -28,7 +28,7 @@ def test_activation_reconstruction():
     assert rel_err < 0.02
 
 
-def test_ternary_forward_vs_float():
+def test_forward():
     """Ternary+int8 forward approximates float matmul."""
     torch.manual_seed(2)
     linear = nn.Linear(64, 32, bias=True)

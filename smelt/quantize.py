@@ -19,7 +19,8 @@ def quantize_ternary(w):
 
 
 def pack_tl1(w_t):
-    """Pack ternary weights into TL1 format, transposed for vpshufb.
+    """
+    Pack ternary weights into TL1 format, transposed for vpshufb.
 
     Index = (w0+1)*3 + (w1+1) per pair. Two 4-bit indices per byte.
     Layout: [n_pairs, n_padded/2], k-pairs along rows, columns along cols.

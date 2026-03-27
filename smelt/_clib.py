@@ -12,7 +12,12 @@ def load_lib():
         return _LIB
 
     so = _CSRC_DIR / "smelt_kernels.so"
-    srcs = [_CSRC_DIR / "ternary_gemm.c", _CSRC_DIR / "plac_eval.c", _CSRC_DIR / "softmax_int.c"]
+    srcs = [
+        _CSRC_DIR / "ternary_gemm.c",
+        _CSRC_DIR / "plac_eval.c",
+        _CSRC_DIR / "softmax_int.c",
+        _CSRC_DIR / "rmsnorm_int.c",
+    ]
     if not so.exists() and all(s.exists() for s in srcs):
         cmd = ["gcc", "-O3", "-march=native", "-fopenmp", "-shared", "-fPIC", "-o", str(so)]
         subprocess.run(cmd + [str(s) for s in srcs], check=True)
@@ -42,6 +47,14 @@ def load_lib():
         _LIB.softmax_int.restype = None
         _LIB.softmax_int.argtypes = [
             ctypes.c_void_p,  # x
+            ctypes.c_void_p,  # y
+            ctypes.c_int,  # rows
+            ctypes.c_int,  # cols
+        ]
+        _LIB.rmsnorm_int_batched.restype = None
+        _LIB.rmsnorm_int_batched.argtypes = [
+            ctypes.c_void_p,  # x
+            ctypes.c_void_p,  # gamma
             ctypes.c_void_p,  # y
             ctypes.c_int,  # rows
             ctypes.c_int,  # cols
