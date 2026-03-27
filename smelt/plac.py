@@ -191,7 +191,7 @@ def terms_to_str(terms):
     """String shift terms, e.g. 'x>>1 + x>>3'."""
     parts = []
     for i, (sign, exp) in enumerate(terms):
-        shift = f"x<<{-exp}" if exp < 0 else ("x" if exp == 0 else f"x>>{exp}")
+        shift = f"x>>{-exp}" if exp < 0 else ("x" if exp == 0 else f"x<<{exp}")
         if i == 0:
             parts.append(f"-{shift}" if sign < 0 else shift)
         else:
