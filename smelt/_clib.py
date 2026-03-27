@@ -14,8 +14,9 @@ def load_lib():
     so = _CSRC_DIR / "smelt_kernels.so"
     srcs = [_CSRC_DIR / "ternary_gemm.c", _CSRC_DIR / "plac_eval.c"]
     if not so.exists() and all(s.exists() for s in srcs):
-        cmd = ["gcc", "-O3", "-march=native", "-shared", "-fPIC", "-o", str(so)]
+        cmd = ["gcc", "-O3", "-march=native", "-fopenmp", "-shared", "-fPIC", "-o", str(so)]
         subprocess.run(cmd + [str(s) for s in srcs], check=True)
+
     if so.exists():
         _LIB = ctypes.CDLL(str(so))
         _LIB.ternary_gemm.restype = None

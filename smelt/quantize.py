@@ -4,7 +4,7 @@ import torch.nn as nn
 
 from ._clib import load_lib
 
-_POWERS = torch.tensor([128, 64, 32, 16, 8, 4, 2, 1], dtype=torch.uint8)
+_POWERS = torch.tensor([1, 2, 4, 8, 16, 32, 64, 128], dtype=torch.uint8)
 
 
 def quantize_ternary(w):

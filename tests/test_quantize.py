@@ -14,8 +14,8 @@ def test_roundtrip_pack_unpack():
     """Pack then unpack recovers ternary weights exactly."""
     torch.manual_seed(0)
     w_t, _ = quantize_ternary(torch.randn(32, 64))
-    pos, neg = pack_ternary(w_t)
-    assert (w_t == unpack_ternary(pos, neg, 64)).all()
+    val, sign = pack_ternary(w_t)
+    assert (w_t == unpack_ternary(val, sign, 64)).all()
 
 
 def test_activation_reconstruction():

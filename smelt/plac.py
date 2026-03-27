@@ -137,8 +137,9 @@ class PLACFunc:
             device, dtype = x.device, x.dtype
             x = x.detach().cpu().numpy()
 
-        y_fix = self._eval_int(to_fixed(x))
-        y = from_fixed(y_fix)
+        orig_shape = x.shape
+        y_fix = self._eval_int(to_fixed(x.ravel()))
+        y = from_fixed(y_fix).reshape(orig_shape)
 
         if is_torch:
             return torch.from_numpy(y).to(device=device, dtype=dtype)
@@ -153,12 +154,11 @@ class PLACFunc:
         """Int32 segment lookup + shift-and-add."""
         n = x_fix.size
         y = np.empty(n, dtype=np.int32)
-        x_c = np.ascontiguousarray(x_fix)
 
         lib = load_lib()
         if lib is not None:
             lib.plac_eval_int(
-                x_c.ctypes.data,
+                x_fix.ctypes.data,
                 y.ctypes.data,
                 n,
                 self.n_segments,
