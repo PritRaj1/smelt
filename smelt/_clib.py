@@ -19,7 +19,7 @@ def load_lib():
         _CSRC_DIR / "rmsnorm_int.c",
     ]
     if not so.exists() and all(s.exists() for s in srcs):
-        cmd = ["gcc", "-O3", "-march=native", "-fopenmp", "-shared", "-fPIC", "-o", str(so)]
+        cmd = ["gcc", "-O3", "-march=native", "-flto", "-funroll-loops", "-fopenmp", "-shared", "-fPIC", "-o", str(so)]
         subprocess.run(cmd + [str(s) for s in srcs], check=True)
 
     if so.exists():
