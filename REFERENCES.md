@@ -12,6 +12,15 @@
 - [ML-PLAC](https://ieeexplore.ieee.org/document/9662230/)
 - [OML-PLAC](https://www.mdpi.com/2076-3417/12/20/10616)
 
+## Integer-Only Inference
+
+- [I-LLM: Efficient Integer-Only Inference for Fully-Quantized Low-Bit LLMs](https://arxiv.org/abs/2405.17849)
+- [I-BERT: Integer-only BERT Quantization](https://arxiv.org/abs/2101.01321)
+
+## Post-Training Ternary Quantization
+
+- [PTQTP: Post-Training Quantization to Trit-Planes](https://arxiv.org/abs/2509.16989)
+
 ## KV Cache Quantization
 
 - [TurboQuant](https://arxiv.org/abs/2504.19874)
