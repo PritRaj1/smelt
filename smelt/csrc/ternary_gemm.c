@@ -1,85 +1,92 @@
 #include <immintrin.h>
 #include <stdint.h>
+#include <string.h>
 
-#define NR 4 // columns per microkernel: reuse activation loads
-
-// expand 32 packed bits (LSB-first) to 32-lane int8 mask
-static inline __m256i expand_mask(uint32_t bits) {
-    __m256i vbits = _mm256_set1_epi32((int32_t)bits);
-    __m256i shuf = _mm256_setr_epi8(0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2,
-                                    2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 3);
-    __m256i bit_idx =
-        _mm256_setr_epi8(0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, (char)0x80, 0x01, 0x02, 0x04,
-                         0x08, 0x10, 0x20, 0x40, (char)0x80, 0x01, 0x02, 0x04, 0x08, 0x10, 0x20,
-                         0x40, (char)0x80, 0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, (char)0x80);
-    __m256i spread = _mm256_shuffle_epi8(vbits, shuf);
-    return _mm256_cmpeq_epi8(_mm256_and_si256(spread, bit_idx), bit_idx);
-}
-
-// accumulate 32 masked int8 values into int32
-static inline __m256i accum_masked(__m256i acc, __m256i xv, __m256i mask, int add) {
-    __m256i ones16 = _mm256_set1_epi16(1);
-    __m256i v = _mm256_blendv_epi8(_mm256_setzero_si256(), xv, mask);
-    __m256i lo = _mm256_madd_epi16(_mm256_cvtepi8_epi16(_mm256_castsi256_si128(v)), ones16);
-    __m256i hi = _mm256_madd_epi16(_mm256_cvtepi8_epi16(_mm256_extracti128_si256(v, 1)), ones16);
-    __m256i sum = _mm256_add_epi32(lo, hi);
-    return add ? _mm256_add_epi32(acc, sum) : _mm256_sub_epi32(acc, sum);
-}
-
-static inline int32_t hsum_epi32(__m256i v) {
-    __m128i lo = _mm256_castsi256_si128(v);
-    __m128i hi = _mm256_extracti128_si256(v, 1);
-    lo = _mm_add_epi32(lo, hi);
-    lo = _mm_hadd_epi32(lo, lo);
-    lo = _mm_hadd_epi32(lo, lo);
-    return _mm_cvtsi128_si32(lo);
-}
-
-// y[m,n] = x[m,k] @ w[n,k].T
-// x: int8 [m,k], w: val/sign bitmasks [n, k/8], LSB-first
-void ternary_gemm(const int8_t *x, const uint8_t *w_val, const uint8_t *w_sign, int32_t *y, int m,
-                  int n, int k) {
-    int k8 = k / 8;
-    int k32 = k / 32;
+// y[m,n] = x[m,k] @ w[n,k].T using TL1 LUT + vpshufb
+void ternary_gemm(const int8_t *x, const uint8_t *w_tl1, int32_t *y, int m, int n_padded, int k,
+                  int n_pairs) {
+    int half_n = n_padded / 2;
 
 #pragma omp parallel for schedule(dynamic)
     for (int i = 0; i < m; i++) {
         const int8_t *xi = x + i * k;
+        int32_t *yi = y + i * n_padded;
+        memset(yi, 0, n_padded * sizeof(int32_t));
 
-        int j;
-        for (j = 0; j + NR <= n; j += NR) {
-            __m256i acc[NR];
-            for (int c = 0; c < NR; c++)
-                acc[c] = _mm256_setzero_si256();
+        // int16 accumulators, flush every 64 pairs to avoid overflow
+        int16_t acc16[n_padded];
+        memset(acc16, 0, n_padded * sizeof(int16_t));
+        int since_flush = 0;
 
-            for (int b0 = 0; b0 < k32; b0++) {
-                __m256i xv = _mm256_loadu_si256((__m256i *)(xi + b0 * 32));
+        for (int p = 0; p < n_pairs; p++) {
+            int16_t a0 = xi[p * 2];
+            int16_t a1 = xi[p * 2 + 1];
 
-                for (int c = 0; c < NR; c++) {
-                    uint32_t val = *(uint32_t *)(w_val + (j + c) * k8 + b0 * 4);
-                    uint32_t sgn = *(uint32_t *)(w_sign + (j + c) * k8 + b0 * 4);
+            int16_t lut16[16] = {0};
+            lut16[0] = -a0 - a1;
+            lut16[1] = -a0;
+            lut16[2] = -a0 + a1;
+            lut16[3] = -a1;
+            lut16[4] = 0;
+            lut16[5] = a1;
+            lut16[6] = a0 - a1;
+            lut16[7] = a0;
+            lut16[8] = a0 + a1;
 
-                    acc[c] = accum_masked(acc[c], xv, expand_mask(val & ~sgn), 1);
-                    acc[c] = accum_masked(acc[c], xv, expand_mask(val & sgn), 0);
+            // split LUT into low/high bytes for vpshufb
+            uint8_t lut_lo[16], lut_hi[16];
+            for (int t = 0; t < 16; t++) {
+                lut_lo[t] = (uint8_t)(lut16[t] & 0xFF);
+                lut_hi[t] = (uint8_t)((lut16[t] >> 8) & 0xFF);
+            }
+            __m128i vlut_lo = _mm_loadu_si128((__m128i *)lut_lo);
+            __m128i vlut_hi = _mm_loadu_si128((__m128i *)lut_hi);
+
+            // 32 columns per step
+            const uint8_t *wp = w_tl1 + p * half_n;
+            for (int jb = 0; jb < half_n; jb += 16) {
+                __m128i widx = _mm_loadu_si128((__m128i *)(wp + jb));
+                __m128i lo_idx = _mm_and_si128(widx, _mm_set1_epi8(0x0F));
+                __m128i hi_idx = _mm_and_si128(_mm_srli_epi16(widx, 4), _mm_set1_epi8(0x0F));
+
+                __m128i even_lo = _mm_shuffle_epi8(vlut_lo, lo_idx);
+                __m128i even_hi = _mm_shuffle_epi8(vlut_hi, lo_idx);
+                __m128i odd_lo = _mm_shuffle_epi8(vlut_lo, hi_idx);
+                __m128i odd_hi = _mm_shuffle_epi8(vlut_hi, hi_idx);
+
+                // reconstruct int16
+                __m128i even_a = _mm_unpacklo_epi8(even_lo, even_hi);
+                __m128i even_b = _mm_unpackhi_epi8(even_lo, even_hi);
+                __m128i odd_a = _mm_unpacklo_epi8(odd_lo, odd_hi);
+                __m128i odd_b = _mm_unpackhi_epi8(odd_lo, odd_hi);
+
+                // interleave and acc
+                int16_t *dst = acc16 + jb * 2;
+                _mm_storeu_si128((__m128i *)(dst),
+                                 _mm_add_epi16(_mm_loadu_si128((__m128i *)(dst)),
+                                               _mm_unpacklo_epi16(even_a, odd_a)));
+                _mm_storeu_si128((__m128i *)(dst + 8),
+                                 _mm_add_epi16(_mm_loadu_si128((__m128i *)(dst + 8)),
+                                               _mm_unpackhi_epi16(even_a, odd_a)));
+                _mm_storeu_si128((__m128i *)(dst + 16),
+                                 _mm_add_epi16(_mm_loadu_si128((__m128i *)(dst + 16)),
+                                               _mm_unpacklo_epi16(even_b, odd_b)));
+                _mm_storeu_si128((__m128i *)(dst + 24),
+                                 _mm_add_epi16(_mm_loadu_si128((__m128i *)(dst + 24)),
+                                               _mm_unpackhi_epi16(even_b, odd_b)));
+            }
+
+            since_flush++;
+            if (since_flush >= 64) {
+                for (int j = 0; j < n_padded; j++) {
+                    yi[j] += acc16[j];
+                    acc16[j] = 0;
                 }
+                since_flush = 0;
             }
-
-            for (int c = 0; c < NR; c++)
-                y[i * n + j + c] = hsum_epi32(acc[c]);
         }
 
-        // remainder columns
-        for (; j < n; j++) {
-            __m256i acc0 = _mm256_setzero_si256();
-            for (int b0 = 0; b0 < k32; b0++) {
-                __m256i xv = _mm256_loadu_si256((__m256i *)(xi + b0 * 32));
-                uint32_t val = *(uint32_t *)(w_val + j * k8 + b0 * 4);
-                uint32_t sgn = *(uint32_t *)(w_sign + j * k8 + b0 * 4);
-
-                acc0 = accum_masked(acc0, xv, expand_mask(val & ~sgn), 1);
-                acc0 = accum_masked(acc0, xv, expand_mask(val & sgn), 0);
-            }
-            y[i * n + j] = hsum_epi32(acc0);
-        }
+        for (int j = 0; j < n_padded; j++)
+            yi[j] += acc16[j];
     }
 }

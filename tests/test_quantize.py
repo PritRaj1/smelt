@@ -3,10 +3,10 @@ import torch.nn as nn
 
 from smelt.quantize import (
     TernaryLinear,
-    pack_ternary,
+    pack_tl1,
     quantize_activations,
     quantize_ternary,
-    unpack_ternary,
+    unpack_tl1,
 )
 
 
@@ -14,8 +14,8 @@ def test_roundtrip_pack_unpack():
     """Pack then unpack recovers ternary weights exactly."""
     torch.manual_seed(0)
     w_t, _ = quantize_ternary(torch.randn(32, 64))
-    val, sign = pack_ternary(w_t)
-    assert (w_t == unpack_ternary(val, sign, 64)).all()
+    packed, n_pairs, n_padded = pack_tl1(w_t)
+    assert (w_t == unpack_tl1(packed, n_pairs, n_padded, 32, 64)).all()
 
 
 def test_activation_reconstruction():

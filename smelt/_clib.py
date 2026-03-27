@@ -21,13 +21,13 @@ def load_lib():
         _LIB = ctypes.CDLL(str(so))
         _LIB.ternary_gemm.restype = None
         _LIB.ternary_gemm.argtypes = [
-            ctypes.c_void_p,
-            ctypes.c_void_p,
-            ctypes.c_void_p,
-            ctypes.c_void_p,
-            ctypes.c_int,
-            ctypes.c_int,
-            ctypes.c_int,
+            ctypes.c_void_p,  # x
+            ctypes.c_void_p,  # w_tl1
+            ctypes.c_void_p,  # y
+            ctypes.c_int,  # m
+            ctypes.c_int,  # n_padded
+            ctypes.c_int,  # k
+            ctypes.c_int,  # n_pairs
         ]
         _LIB.plac_eval_int.restype = None
         _LIB.plac_eval_int.argtypes = [

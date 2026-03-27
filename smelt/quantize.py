@@ -6,8 +6,6 @@ import torch.nn as nn
 
 from ._clib import load_lib
 
-_POWERS = torch.tensor([1, 2, 4, 8, 16, 32, 64, 128], dtype=torch.uint8)
-
 
 def quantize_ternary(w):
     """
@@ -20,30 +18,50 @@ def quantize_ternary(w):
     return w_t, scale
 
 
-def pack_ternary(w_t):
+def pack_tl1(w_t):
+    """Pack ternary weights into TL1 format, transposed for vpshufb.
+
+    Index = (w0+1)*3 + (w1+1) per pair. Two 4-bit indices per byte.
+    Layout: [n_pairs, n_padded/2], k-pairs along rows, columns along cols.
     """
-    Pack into val/sign uint8 bitmasks (8 weights per byte).
+    n, k = w_t.shape
 
-    val=1 where weight != 0, sign=1 where weight == -1.
-    """
-    out_dim, in_dim = w_t.shape
-    pad = (8 - in_dim % 8) % 8
-    if pad:
-        w_t = torch.nn.functional.pad(w_t, (0, pad))
+    if k % 2:
+        w_t = torch.nn.functional.pad(w_t, (0, 1))
+        k = k + 1
 
-    w_flat = w_t.reshape(out_dim, -1, 8)
-    val = ((w_flat != 0).to(torch.uint8) * _POWERS).sum(dim=-1).to(torch.uint8)
-    sign = ((w_flat == -1).to(torch.uint8) * _POWERS).sum(dim=-1).to(torch.uint8)
-    return val, sign
+    pairs = w_t.reshape(n, k // 2, 2)
+    idx = (pairs[:, :, 0].to(torch.int16) + 1) * 3 + (pairs[:, :, 1].to(torch.int16) + 1)
+    idx = idx.to(torch.uint8)
+    n_pairs = idx.shape[1]
+
+    n_pad = (32 - n % 32) % 32
+    if n_pad:
+        idx = torch.nn.functional.pad(idx, (0, 0, 0, n_pad), value=4)
+    n_padded = idx.shape[0]
+
+    idx_t = idx.T.contiguous()
+    even = idx_t[:, 0::2]
+    odd = idx_t[:, 1::2]
+    packed = (even | (odd << 4)).to(torch.uint8)
+
+    return packed, n_pairs, n_padded
 
 
-def unpack_ternary(val_mask, sign_mask, in_dim):
-    """Unpack val/sign bitmasks to ternary {-1, 0, +1}."""
-    out_dim = val_mask.shape[0]
-    val_bits = (val_mask.unsqueeze(-1) & _POWERS).ne(0).to(torch.int8)
-    sign_bits = (sign_mask.unsqueeze(-1) & _POWERS).ne(0).to(torch.int8)
-    # val=1,sign=0 -> +1; val=1,sign=1 -> -1; val=0 -> 0
-    return (val_bits * (1 - 2 * sign_bits)).reshape(out_dim, -1)[:, :in_dim]
+def unpack_tl1(packed, n_pairs, n_padded, n, k):
+    """Unpack TL1 transposed format to ternary {-1, 0, +1}."""
+    even = (packed & 0x0F).to(torch.int16)
+    odd = ((packed >> 4) & 0x0F).to(torch.int16)
+
+    idx_t = torch.zeros(n_pairs, n_padded, dtype=torch.int16)
+    idx_t[:, 0::2] = even
+    idx_t[:, 1::2] = odd
+    idx = idx_t.T[:n, :]
+
+    w0 = (idx // 3 - 1).to(torch.int8)
+    w1 = (idx % 3 - 1).to(torch.int8)
+    w = torch.stack([w0, w1], dim=2).reshape(n, -1)
+    return w[:, :k]
 
 
 def quantize_activations(x):
@@ -53,29 +71,27 @@ def quantize_activations(x):
     return x_q, scale
 
 
-def _ternary_gemm(x_np, wv_np, ws_np, m, n, k):
-    """Ternary GEMM: int8 activations, bitmask weights -> int32."""
-    y_np = np.empty((m, n), dtype=np.int32)
+def _ternary_gemm(x_np, w_np, m, n, n_padded, k, n_pairs):
+    y_np = np.empty((m, n_padded), dtype=np.int32)
 
     lib = load_lib()
     if lib is not None:
         lib.ternary_gemm(
             x_np.ctypes.data,
-            wv_np.ctypes.data,
-            ws_np.ctypes.data,
+            w_np.ctypes.data,
             y_np.ctypes.data,
             m,
-            n,
+            n_padded,
             k,
+            n_pairs,
         )
-        return torch.from_numpy(y_np)
+        return torch.from_numpy(y_np[:, :n])
 
-    warnings.warn("C kernel unavailable, using slow torch fallback for ternary GEMM", stacklevel=2)
-    w_val = torch.from_numpy(wv_np)
-    w_sign = torch.from_numpy(ws_np)
-    x_q = torch.from_numpy(x_np)
-    w_t = unpack_ternary(w_val, w_sign, k)
-    return x_q.to(torch.int32) @ w_t.to(torch.int32).T
+    warnings.warn(
+        "C kernel unavailable, using slow torch fallback for ternary GEMM",
+        stacklevel=2,
+    )
+    return None
 
 
 class TernaryLinear(nn.Module):
@@ -84,17 +100,17 @@ class TernaryLinear(nn.Module):
     def __init__(self, linear):
         super().__init__()
         w_t, scale = quantize_ternary(linear.weight.data.float())
-        val, sign = pack_ternary(w_t)
-        self.register_buffer("w_val", val)
-        self.register_buffer("w_sign", sign)
+        packed, n_pairs, n_padded = pack_tl1(w_t)
+        self.register_buffer("w_packed", packed)
         self.register_buffer("w_scale", scale)
         self.in_features = linear.in_features
         self.out_features = linear.out_features
+        self.n_pairs = n_pairs
+        self.n_padded = n_padded
         self.bias = linear.bias
 
-        # pre-convert to numpy once for C kernel
-        self._wv_np = np.ascontiguousarray(val.numpy())
-        self._ws_np = np.ascontiguousarray(sign.numpy())
+        self._w_np = np.ascontiguousarray(packed.numpy())
+        self._w_t = w_t  # for fallback
 
     def forward(self, x):
         orig_shape = x.shape
@@ -104,12 +120,16 @@ class TernaryLinear(nn.Module):
 
         y_int32 = _ternary_gemm(
             x_np,
-            self._wv_np,
-            self._ws_np,
+            self._w_np,
             x_2d.shape[0],
             self.out_features,
+            self.n_padded,
             self.in_features,
+            self.n_pairs,
         )
+
+        if y_int32 is None:
+            y_int32 = x_q.to(torch.int32) @ self._w_t.to(torch.int32).T
 
         # x ~= x_q / x_scale, w ~= w_t * w_scale
         y = y_int32.float() * self.w_scale / x_scale
