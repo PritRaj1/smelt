@@ -8,6 +8,7 @@ from ._clib import load_lib
 
 FRAC_BITS = 16
 SCALE = 1 << FRAC_BITS
+LUT_SIZE = 4096
 
 
 def to_fixed(x):
@@ -106,40 +107,61 @@ def auto_segment(f, x_lo, x_hi, target_mae, n_terms=2, tol=1e-6):
     return breakpoints
 
 
+def _build_lut(f, x_lo, x_hi, n_terms):
+    """Compile-time dense LUT: PLAC at each quantized input."""
+    bp = auto_segment(f, x_lo, x_hi, target_mae=1e-3, n_terms=n_terms)
+    slopes, intercepts, terms = fit_pwl(f, bp, n_terms)
+
+    x_lo_fix = to_fixed(np.array([x_lo]))[0]
+    x_hi_fix = to_fixed(np.array([x_hi]))[0]
+    range_fix = x_hi_fix - x_lo_fix
+
+    # shift so that (x - x_lo) >> shift maps to [0, LUT_SIZE)
+    shift = 0
+    while (range_fix >> shift) > LUT_SIZE:
+        shift += 1
+
+    lut = np.empty(LUT_SIZE, dtype=np.int32)
+    bp_inner = np.array(bp[1:])
+    intercepts_arr = np.array(intercepts)
+
+    for i in range(LUT_SIZE):
+        x_fix = x_lo_fix + (i << shift) + (1 << (shift - 1) if shift > 0 else 0)
+        x_float = x_fix / SCALE
+        seg = int(np.searchsorted(bp_inner, x_float).clip(0, len(slopes) - 1))
+
+        acc = 0
+        for sign, exp in terms[seg]:
+            shifted = x_fix << exp if exp >= 0 else x_fix >> (-exp)
+            acc += sign * shifted
+        lut[i] = np.int32(acc + to_fixed(np.array([intercepts_arr[seg]]))[0])
+
+    return np.ascontiguousarray(lut), x_lo_fix, shift, bp, slopes, intercepts, terms
+
+
 class PLACFunc:
-    """Piecewise linear approx with shift-constrained slopes."""
+    """Piecewise linear approx with shift-constrained slopes. Dense LUT eval."""
 
     def __init__(self, f, x_lo, x_hi, target_mae=1e-3, n_terms=2):
-        bp = auto_segment(f, x_lo, x_hi, target_mae, n_terms)
-        slopes, intercepts, terms = fit_pwl(f, bp, n_terms)
+        lut, x_lo_fix, shift, bp, slopes, _intercepts, terms = _build_lut(f, x_lo, x_hi, n_terms)
 
+        self._lut = lut
+        self._x_lo_fix = x_lo_fix
+        self._shift = shift
         self.breakpoints_f = bp
         self.terms = terms
         self.n_segments = len(slopes)
         self.n_terms = n_terms
 
-        n_seg = self.n_segments
-        self._bp = np.ascontiguousarray(to_fixed(np.array(bp)))
-        self._intercepts = np.ascontiguousarray(to_fixed(np.array(intercepts)))
-        self._signs = np.zeros((n_seg, n_terms), dtype=np.int32)
-        self._exps = np.zeros((n_seg, n_terms), dtype=np.int32)
-        for i, seg_terms in enumerate(terms):
-            for j, (sign, exp) in enumerate(seg_terms):
-                self._signs[i, j] = sign
-                self._exps[i, j] = exp
-
-        self._signs = np.ascontiguousarray(self._signs)
-        self._exps = np.ascontiguousarray(self._exps)
-
     def __call__(self, x):
-        """Evaluate. Accepts float numpy/torch, converts to int32 internally."""
+        """Evaluate. Accepts float numpy/torch."""
         is_torch = isinstance(x, torch.Tensor)
         if is_torch:
             device, dtype = x.device, x.dtype
             x = x.detach().cpu().numpy()
 
         orig_shape = x.shape
-        y_fix = self._eval_int(to_fixed(x.ravel()))
+        y_fix = self._eval_lut(to_fixed(x.ravel()))
         y = from_fixed(y_fix).reshape(orig_shape)
 
         if is_torch:
@@ -148,39 +170,29 @@ class PLACFunc:
         return y
 
     def eval_int32(self, x_int32):
-        """Evaluate without float conversion."""
-        return self._eval_int(np.ascontiguousarray(x_int32))
+        """Evaluate directly on int32 array."""
+        return self._eval_lut(np.ascontiguousarray(x_int32))
 
-    def _eval_int(self, x_fix):
-        """Int32 segment lookup + shift-and-add."""
+    def _eval_lut(self, x_fix):
         n = x_fix.size
         y = np.empty(n, dtype=np.int32)
 
         lib = load_lib()
         if lib is not None:
-            lib.plac_eval_int(
+            lib.plac_eval_lut(
                 x_fix.ctypes.data,
                 y.ctypes.data,
                 n,
-                self.n_segments,
-                self.n_terms,
-                self._bp.ctypes.data,
-                self._signs.ctypes.data,
-                self._exps.ctypes.data,
-                self._intercepts.ctypes.data,
+                self._lut.ctypes.data,
+                LUT_SIZE,
+                self._x_lo_fix,
+                self._shift,
             )
             return y
 
-        warnings.warn("C kernel unavailable, using slow numpy fallback for PLAC", stacklevel=3)
-        bp_inner = self._bp[1:]
-        idx = np.searchsorted(bp_inner, x_fix).clip(0, self.n_segments - 1)
-        acc = np.zeros(n, dtype=np.int32)
-        for j in range(self.n_terms):
-            s = self._signs[idx, j]
-            e = self._exps[idx, j]
-            shifted = np.where(e >= 0, x_fix << e, x_fix >> (-e))
-            acc += s * shifted
-        return acc + self._intercepts[idx]
+        warnings.warn("C kernel unavailable, using numpy fallback for PLAC", stacklevel=3)
+        idx = ((x_fix - self._x_lo_fix) >> self._shift).clip(0, LUT_SIZE - 1)
+        return self._lut[idx]
 
     def max_error(self, f, n_samples=10000):
         x = np.linspace(self.breakpoints_f[0], self.breakpoints_f[-1], n_samples)

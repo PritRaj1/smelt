@@ -29,16 +29,14 @@ def load_lib():
             ctypes.c_int,  # k
             ctypes.c_int,  # n_pairs
         ]
-        _LIB.plac_eval_int.restype = None
-        _LIB.plac_eval_int.argtypes = [
-            ctypes.c_void_p,
-            ctypes.c_void_p,
-            ctypes.c_int,
-            ctypes.c_int,
-            ctypes.c_int,
-            ctypes.c_void_p,
-            ctypes.c_void_p,
-            ctypes.c_void_p,
-            ctypes.c_void_p,
+        _LIB.plac_eval_lut.restype = None
+        _LIB.plac_eval_lut.argtypes = [
+            ctypes.c_void_p,  # x
+            ctypes.c_void_p,  # y
+            ctypes.c_int,  # n
+            ctypes.c_void_p,  # lut
+            ctypes.c_int,  # lut_size
+            ctypes.c_int,  # x_lo
+            ctypes.c_int,  # shift
         ]
     return _LIB
