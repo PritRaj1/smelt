@@ -32,13 +32,10 @@ static inline int32_t isqrt_fixed(int64_t v) {
         return (1 << 30);
 
     int exp = 63 - __builtin_clzll(v);
-
-    // normalise v to [1<<FRAC, 2<<FRAC)
     int64_t norm = (exp > FRAC) ? (v >> (exp - FRAC)) : (v << (FRAC - exp));
     int idx = ((int)(norm - (1LL << FRAC)) >> 8) & 0xFF;
     int32_t result = ISQRT_LUT[idx];
 
-    // adjust for exponent: 1/sqrt(2^k)
     int k = exp - FRAC;
     int abs_k = k < 0 ? -k : k;
     int half = abs_k / 2;
@@ -53,16 +50,14 @@ static inline int32_t isqrt_fixed(int64_t v) {
     return (k > 0) ? (result >> half) : (result << half);
 }
 
-// y[i] = x[i] * gamma[i] / rms(x), all Q16.16
+// RMSNorm: y[i] = x[i] * gamma[i] / rms(x)
 void rmsnorm_int(const int32_t *x, const int32_t *gamma, int32_t *y, int n) {
     int64_t sum_sq = 0;
     for (int i = 0; i < n; i++)
         sum_sq += ((int64_t)x[i] * x[i]) >> FRAC;
 
-    // 1/sqrt(mean_sq) via LUT
     int32_t inv_rms = isqrt_fixed(sum_sq / n);
 
-    // y[i] = x[i] * inv_rms * gamma[i] >> FRAC
     for (int i = 0; i < n; i++)
         y[i] = (int32_t)((((int64_t)x[i] * inv_rms) >> FRAC) * gamma[i] >> FRAC);
 }
@@ -71,4 +66,30 @@ void rmsnorm_int_batched(const int32_t *x, const int32_t *gamma, int32_t *y, int
 #pragma omp parallel for schedule(dynamic)
     for (int r = 0; r < rows; r++)
         rmsnorm_int(x + r * cols, gamma, y + r * cols, cols);
+}
+
+// LayerNorm: y[i] = (x[i] - mean) * gamma[i] / std + beta[i]
+void layernorm_int(const int32_t *x, const int32_t *gamma, const int32_t *beta, int32_t *y, int n) {
+    int64_t sum = 0;
+    for (int i = 0; i < n; i++)
+        sum += x[i];
+    int32_t mean = (int32_t)(sum / n);
+
+    int64_t sum_sq = 0;
+    for (int i = 0; i < n; i++) {
+        int64_t d = (int64_t)(x[i] - mean);
+        sum_sq += (d * d) >> FRAC;
+    }
+
+    int32_t inv_std = isqrt_fixed(sum_sq / n);
+
+    for (int i = 0; i < n; i++)
+        y[i] = (int32_t)((((int64_t)(x[i] - mean) * inv_std) >> FRAC) * gamma[i] >> FRAC) + beta[i];
+}
+
+void layernorm_int_batched(const int32_t *x, const int32_t *gamma, const int32_t *beta, int32_t *y,
+                           int rows, int cols) {
+#pragma omp parallel for schedule(dynamic)
+    for (int r = 0; r < rows; r++)
+        layernorm_int(x + r * cols, gamma, beta, y + r * cols, cols);
 }
