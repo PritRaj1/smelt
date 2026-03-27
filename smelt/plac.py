@@ -1,4 +1,5 @@
 import math
+import warnings
 
 import numpy as np
 import torch
@@ -170,7 +171,7 @@ class PLACFunc:
             )
             return y
 
-        # numpy fallback
+        warnings.warn("C kernel unavailable, using slow numpy fallback for PLAC", stacklevel=3)
         bp_inner = self._bp[1:]
         idx = np.searchsorted(bp_inner, x_fix).clip(0, self.n_segments - 1)
         acc = np.zeros(n, dtype=np.int32)

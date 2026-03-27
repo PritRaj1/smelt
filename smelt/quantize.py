@@ -1,3 +1,5 @@
+import warnings
+
 import numpy as np
 import torch
 import torch.nn as nn
@@ -68,7 +70,7 @@ def _ternary_gemm(x_np, wv_np, ws_np, m, n, k):
         )
         return torch.from_numpy(y_np)
 
-    # torch fallback
+    warnings.warn("C kernel unavailable, using slow torch fallback for ternary GEMM", stacklevel=2)
     w_val = torch.from_numpy(wv_np)
     w_sign = torch.from_numpy(ws_np)
     x_q = torch.from_numpy(x_np)
