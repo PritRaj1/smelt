@@ -100,8 +100,10 @@ class TernaryLinear(nn.Module):
 
     def __init__(self, linear):
         super().__init__()
+
         w_t, scale = quantize_ternary(linear.weight.data.float())
         packed, n_pairs, n_padded = pack_tl1(w_t)
+
         self.register_buffer("w_packed", packed)
         self.register_buffer("w_scale", scale)
         self.in_features = linear.in_features
@@ -137,4 +139,5 @@ class TernaryLinear(nn.Module):
 
         if self.bias is not None:
             y = y + self.bias
+
         return y.reshape(*orig_shape[:-1], self.out_features)

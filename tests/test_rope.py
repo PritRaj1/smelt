@@ -1,7 +1,7 @@
 import torch
 
 from smelt.plac import from_fixed, to_fixed
-from smelt.rope import rope_int32, precompute_freqs
+from smelt.rope import precompute_freqs, rope_int32
 
 
 def _float_rope(x, dim, theta=10000.0):

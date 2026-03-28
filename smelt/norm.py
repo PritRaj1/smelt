@@ -35,11 +35,12 @@ def _norm_c(x, gamma, beta, lib, fn_name):
     x_np = np.ascontiguousarray(x_2d.numpy())
     g_np = np.ascontiguousarray(gamma.numpy())
     y_np = np.empty_like(x_np)
-
     fn = getattr(lib, fn_name)
+
     if beta is not None:
         b_np = np.ascontiguousarray(beta.numpy())
         fn(x_np.ctypes.data, g_np.ctypes.data, b_np.ctypes.data, y_np.ctypes.data, rows, dim)
+
     else:
         fn(x_np.ctypes.data, g_np.ctypes.data, y_np.ctypes.data, rows, dim)
 
@@ -50,6 +51,7 @@ def _rmsnorm_torch(x, gamma):
     frac = 16
     x64 = x.to(torch.int64)
     mean_sq = (x64 * x64 >> frac).sum(dim=-1, keepdim=True) // x.shape[-1]
+
     # float isqrt (fallback only)
     inv_rms = (1.0 / (mean_sq.float() / (1 << frac)).sqrt().clamp(min=1e-6) * (1 << frac)).to(
         torch.int32
@@ -63,6 +65,7 @@ def _layernorm_torch(x, gamma, beta):
     mean = x64.sum(dim=-1, keepdim=True) // x.shape[-1]
     centered = x64 - mean
     var = (centered * centered >> frac).sum(dim=-1, keepdim=True) // x.shape[-1]
+
     # float isqrt (fallback only)
     inv_std = (1.0 / (var.float() / (1 << frac)).sqrt().clamp(min=1e-6) * (1 << frac)).to(
         torch.int32
