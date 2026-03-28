@@ -108,7 +108,7 @@ def auto_segment(f, x_lo, x_hi, target_mae, n_terms=2, tol=1e-6):
 
 
 def _build_lut(f, x_lo, x_hi, n_terms):
-    """Compile-time dense LUT: PLAC at each quantized input."""
+    """Build dense LUT from PLAC segments."""
     bp = auto_segment(f, x_lo, x_hi, target_mae=1e-3, n_terms=n_terms)
     slopes, intercepts, terms = fit_pwl(f, bp, n_terms)
 

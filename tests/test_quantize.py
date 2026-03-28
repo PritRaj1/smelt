@@ -38,4 +38,4 @@ def test_forward():
     y_t = TernaryLinear(linear)(x)
 
     nmse = ((y_ref - y_t) ** 2).mean() / (y_ref**2).mean()
-    assert nmse < 1.0, f"NMSE {nmse:.3f} too high"
+    assert nmse < 0.5, f"NMSE {nmse:.3f} too high"

@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 
 from .norm import rmsnorm_int32
-from .plac import PLACFunc, from_fixed, relu2_int32, to_fixed
+from .plac import PLACFunc, from_fixed, to_fixed
 from .quantize import TernaryLinear
 
 log = logging.getLogger(__name__)
@@ -50,11 +50,6 @@ class _PLACModule(nn.Module):
 
     def forward(self, x):
         return self.plac(x)
-
-
-class _ReLU2Module(nn.Module):
-    def forward(self, x):
-        return relu2_int32(x)
 
 
 class _RMSNormInt(nn.Module):

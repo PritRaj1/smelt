@@ -9,7 +9,7 @@ def test_sums_to_one():
     x = torch.tensor(to_fixed([1.0, 2.0, 3.0, 4.0]), dtype=torch.int32)
     y = softmax_int32(x)
     total = y.sum().item() / (1 << 16)
-    assert abs(total - 1.0) < 0.02
+    assert abs(total - 1.0) < 0.005
 
 
 def test_argmax():
