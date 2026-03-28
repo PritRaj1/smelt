@@ -21,6 +21,10 @@
 
 - [PTQTP: Post-Training Quantization to Trit-Planes](https://arxiv.org/abs/2509.16989)
 
+## x86 SIMD
+
+- [Intel Guide (AVX2 one)](https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html)
+
 ## KV Cache Quantization
 
 - [TurboQuant](https://arxiv.org/abs/2504.19874)
