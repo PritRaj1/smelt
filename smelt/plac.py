@@ -200,6 +200,12 @@ class PLACFunc:
         return np.max(np.abs(y_ref - self(x)))
 
 
+def relu2_int32(x):
+    """Squared ReLU in Q16.16: max(0, x)^2 >> FRAC."""
+    x = x.to(torch.int64).clamp(min=0)
+    return (x * x >> FRAC_BITS).to(torch.int32)
+
+
 def terms_to_str(terms):
     """String shift terms, e.g. 'x>>1 + x>>3'."""
     parts = []
