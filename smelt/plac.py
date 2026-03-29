@@ -12,10 +12,12 @@ LUT_SIZE = 4096
 
 
 def to_fixed(x):
-    """Float to Q16.16 int32."""
+    """Float to Q16.16 int32. Clamps to int32 range."""
     if isinstance(x, torch.Tensor):
         x = x.numpy()
-    return np.round(np.asarray(x, dtype=np.float64) * SCALE).astype(np.int32)
+
+    val = np.round(np.asarray(x, dtype=np.float64) * SCALE)
+    return np.clip(val, -(1 << 31), (1 << 31) - 1).astype(np.int32)
 
 
 def from_fixed(x):

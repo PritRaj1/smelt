@@ -124,6 +124,11 @@ class TernaryLinear(nn.Module):
         super().__init__()
 
         w_t, scale = quantize_ternary(linear.weight.data.float())
+
+        # use stored scale if available (e.g. BitNet weight_scale)
+        if hasattr(linear, "weight_scale"):
+            scale = linear.weight_scale.float().squeeze()
+
         packed, n_pairs, n_padded = pack_tl1(w_t)
 
         self.register_buffer("w_packed", packed)
