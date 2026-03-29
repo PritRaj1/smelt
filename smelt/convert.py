@@ -9,28 +9,18 @@ from .quantize import TernaryLinear
 
 log = logging.getLogger(__name__)
 
-
-def _silu(x):
-    return torch.nn.functional.silu(x.float()).to(x.dtype)
-
-
-def _gelu(x):
-    return torch.nn.functional.gelu(x.float()).to(x.dtype)
-
-
-_ACT_MAP = {nn.SiLU: (_silu, -8, 8), nn.GELU: (_gelu, -8, 8)}
+# already int-friendly, no PLAC needed
+_SKIP_ACTS = {nn.ReLU, nn.Identity, nn.Dropout}
 
 
 def _is_linear(mod):
-    """nn.Linear or HuggingFace Conv1D (functionally identical)."""
     if isinstance(mod, nn.Linear):
         return True
 
-    return type(mod).__name__ == "Conv1D" and hasattr(mod, "weight") and hasattr(mod, "nf")
+    return type(mod).__name__ == "Conv1D" and hasattr(mod, "nf")
 
 
 def _conv1d_to_linear(mod):
-    """Convert HuggingFace Conv1D to nn.Linear for TernaryLinear."""
     linear = nn.Linear(mod.weight.shape[0], mod.nf, bias=mod.bias is not None)
     linear.weight.data = mod.weight.data.T
     if mod.bias is not None:
@@ -41,6 +31,32 @@ def _conv1d_to_linear(mod):
 
 def _is_rmsnorm(mod):
     return hasattr(mod, "weight") and not hasattr(mod, "bias") and "RMSNorm" in type(mod).__name__
+
+
+def _is_activation(mod):
+    """Leaf module, no parameters, likely an activation."""
+    if type(mod) in _SKIP_ACTS:
+        return False
+
+    if len(list(mod.children())) > 0:
+        return False
+
+    if len(list(mod.parameters())) > 0:
+        return False
+
+    name = type(mod).__name__.lower()
+    keys = ("activation", "silu", "gelu", "sigmoid", "tanh", "swish", "relu")
+    return any(k in name for k in keys)
+
+
+def _make_plac(mod, target_mae):
+    """Build PLACFunc by probing the module's forward."""
+
+    def fn(x):
+        with torch.no_grad():
+            return mod(x.float()).to(x.dtype)
+
+    return PLACFunc(fn, -8, 8, target_mae)
 
 
 class _PLACModule(nn.Module):
@@ -68,7 +84,7 @@ def _default_filter(mod, fqn):
     if _is_linear(mod):
         return "linear"
 
-    if type(mod) in _ACT_MAP:
+    if _is_activation(mod):
         return "activation"
 
     if _is_rmsnorm(mod):
@@ -79,7 +95,7 @@ def _default_filter(mod, fqn):
 
 def quantize(model, skip=None, target_mae=1e-2, filter_fn=None):
     """
-    Quantize model in-place. Replaces linears, acts, norms.
+    Quantize model in-place. Replaces linears, activations, norms.
 
     skip: module name prefixes to leave in float (default: ["lm_head"])
     filter_fn: fn(module, fqn) -> "linear"|"activation"|"rmsnorm"|None
@@ -95,13 +111,13 @@ def quantize(model, skip=None, target_mae=1e-2, filter_fn=None):
             continue
 
         kind = filter_fn(mod, name)
+
         if kind == "linear":
             linear = _conv1d_to_linear(mod) if not isinstance(mod, nn.Linear) else mod
             replacements[name] = TernaryLinear(linear)
 
         elif kind == "activation":
-            fn, lo, hi = _ACT_MAP[type(mod)]
-            replacements[name] = _PLACModule(PLACFunc(fn, lo, hi, target_mae))
+            replacements[name] = _PLACModule(_make_plac(mod, target_mae))
 
         elif kind == "rmsnorm":
             replacements[name] = _RMSNormInt(mod)
