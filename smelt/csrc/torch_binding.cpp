@@ -70,37 +70,52 @@ torch::Tensor smelt_ternary_linear(torch::Tensor x, torch::Tensor w, int n_padde
     return y;
 }
 
-// float in -> fixed -> RMSNorm -> float out
-torch::Tensor smelt_rmsnorm_float(torch::Tensor x, torch::Tensor gamma_fix) {
-    int dim = x.size(-1);
-    auto x2 = x.reshape({-1, dim});
-    auto x_fix = (x2.to(torch::kFloat64) * 65536.0)
-                     .round()
-                     .clamp(-(1LL << 31), (1LL << 31) - 1)
-                     .to(torch::kInt32)
-                     .contiguous();
-    auto y_fix = torch::empty_like(x_fix);
-
-    rmsnorm_int_batched(x_fix.data_ptr<int32_t>(), gamma_fix.data_ptr<int32_t>(),
-                        y_fix.data_ptr<int32_t>(), x2.size(0), dim);
-
-    return (y_fix.to(torch::kFloat64) / 65536.0).to(x.dtype()).reshape(x.sizes());
+static void float_to_fixed(const float *in, int32_t *out, int n) {
+    for (int i = 0; i < n; i++) {
+        double v = (double)in[i] * 65536.0;
+        v = v < -(double)(1LL << 31) ? -(double)(1LL << 31) : v;
+        v = v > (double)((1LL << 31) - 1) ? (double)((1LL << 31) - 1) : v;
+        out[i] = (int32_t)(v + (v >= 0 ? 0.5 : -0.5));
+    }
 }
 
-// float in -> fixed -> PLAC LUT -> float out
-torch::Tensor smelt_plac_float(torch::Tensor x, torch::Tensor lut, int x_lo, int shift) {
-    auto flat = x.reshape({-1});
-    auto x_fix = (flat.to(torch::kFloat64) * 65536.0)
-                     .round()
-                     .clamp(-(1LL << 31), (1LL << 31) - 1)
-                     .to(torch::kInt32)
-                     .contiguous();
+static void fixed_to_float(const int32_t *in, float *out, int n) {
+    for (int i = 0; i < n; i++)
+        out[i] = (float)((double)in[i] / 65536.0);
+}
+
+torch::Tensor smelt_rmsnorm_float(torch::Tensor x, torch::Tensor gamma_fix) {
+    int dim = x.size(-1);
+    auto x2 = x.reshape({-1, dim}).contiguous();
+    int rows = x2.size(0);
+    int n = rows * dim;
+
+    auto x_fix = torch::empty({rows, dim}, torch::kInt32);
     auto y_fix = torch::empty_like(x_fix);
+    auto y_out = torch::empty_like(x2);
 
-    plac_eval_lut(x_fix.data_ptr<int32_t>(), y_fix.data_ptr<int32_t>(), flat.numel(),
-                  lut.data_ptr<int32_t>(), lut.size(0), x_lo, shift);
+    float_to_fixed(x2.data_ptr<float>(), x_fix.data_ptr<int32_t>(), n);
+    rmsnorm_int_batched(x_fix.data_ptr<int32_t>(), gamma_fix.data_ptr<int32_t>(),
+                        y_fix.data_ptr<int32_t>(), rows, dim);
+    fixed_to_float(y_fix.data_ptr<int32_t>(), y_out.data_ptr<float>(), n);
 
-    return (y_fix.to(torch::kFloat64) / 65536.0).to(x.dtype()).reshape(x.sizes());
+    return y_out.reshape(x.sizes());
+}
+
+torch::Tensor smelt_plac_float(torch::Tensor x, torch::Tensor lut, int x_lo, int shift) {
+    auto flat = x.reshape({-1}).contiguous();
+    int n = flat.numel();
+
+    auto x_fix = torch::empty({n}, torch::kInt32);
+    auto y_fix = torch::empty_like(x_fix);
+    auto y_out = torch::empty_like(flat);
+
+    float_to_fixed(flat.data_ptr<float>(), x_fix.data_ptr<int32_t>(), n);
+    plac_eval_lut(x_fix.data_ptr<int32_t>(), y_fix.data_ptr<int32_t>(), n, lut.data_ptr<int32_t>(),
+                  lut.size(0), x_lo, shift);
+    fixed_to_float(y_fix.data_ptr<int32_t>(), y_out.data_ptr<float>(), n);
+
+    return y_out.reshape(x.sizes());
 }
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
