@@ -1,132 +1,139 @@
+import logging
+
 import torch
 import torch.nn as nn
 
 from ._clib import load_lib
+from .matmul import TernaryLinear
+from .plac import PLACFunc, to_fixed
+
+log = logging.getLogger(__name__)
+
+# already int-friendly, no PLAC needed
+_SKIP_ACTS = {nn.ReLU, nn.Identity, nn.Dropout}
 
 
-def _is_already_ternary(w):
-    """Check if w already {-1, 0, +1} or uint8 {0, 1, 255}."""
-    mn, mx = w.min().item(), w.max().item()
-    if not torch.equal(w, w.round()):
-        return False
-
-    if mn >= -1 and mx <= 1:
+def _is_linear(mod):
+    if isinstance(mod, nn.Linear):
         return True
 
-    return mn == 0 and mx in (1, 255)
+    return type(mod).__name__ == "Conv1D" and hasattr(mod, "nf")
 
 
-def _decode_uint8_ternary(w):
-    """Convert uint8 {0, 1, 255} to int8 {0, +1, -1}."""
-    w = w.to(torch.int16)
-    w[w == 255] = -1
-    return w.to(torch.int8)
+def _conv1d_to_linear(mod):
+    linear = nn.Linear(mod.weight.shape[0], mod.nf, bias=mod.bias is not None)
+    linear.weight.data = mod.weight.data.T
+    if mod.bias is not None:
+        linear.bias.data = mod.bias.data
+
+    return linear
 
 
-def quantize_ternary(w):
-    """
-    Quantize to {-1, 0, +1}. Skips already-ternary weights (e.g. BitNet).
-
-    Returns (w_ternary, scale) where w ~= scale * w_ternary.
-    """
-    if _is_already_ternary(w):
-        w_t = _decode_uint8_ternary(w) if w.max() > 1 else w.to(torch.int8)
-        return w_t, torch.tensor(1.0)
-
-    scale = w.abs().mean()
-    w_t = (w / (scale + 1e-10)).round().clamp(-1, 1).to(torch.int8)
-    return w_t, scale
+def _is_rmsnorm(mod):
+    return hasattr(mod, "weight") and not hasattr(mod, "bias") and "RMSNorm" in type(mod).__name__
 
 
-def pack_tl1(w_t):
-    """
-    Pack ternary into TL1 format, transposed for vpshufb.
+def _is_activation(mod):
+    """Leaf module, no parameters, likely an activation."""
+    if type(mod) in _SKIP_ACTS:
+        return False
 
-    Index = (w0+1)*3 + (w1+1) per pair. Two 4-bit indices per byte.
-    Layout: [n_pairs, n_padded/2], k-pairs along rows, columns along cols.
-    """
-    n, k = w_t.shape
+    if len(list(mod.children())) > 0:
+        return False
 
-    if k % 2:
-        w_t = torch.nn.functional.pad(w_t, (0, 1))
-        k = k + 1
+    if len(list(mod.parameters())) > 0:
+        return False
 
-    pairs = w_t.reshape(n, k // 2, 2)
-    idx = (pairs[:, :, 0].to(torch.int16) + 1) * 3 + (pairs[:, :, 1].to(torch.int16) + 1)
-    idx = idx.to(torch.uint8)
-    n_pairs = idx.shape[1]
-
-    n_pad = (32 - n % 32) % 32
-    if n_pad:
-        idx = torch.nn.functional.pad(idx, (0, 0, 0, n_pad), value=4)
-    n_padded = idx.shape[0]
-
-    idx_t = idx.T.contiguous()
-    even = idx_t[:, 0::2]
-    odd = idx_t[:, 1::2]
-    packed = (even | (odd << 4)).to(torch.uint8)
-
-    return packed, n_pairs, n_padded
+    name = type(mod).__name__.lower()
+    keys = ("activation", "silu", "gelu", "sigmoid", "tanh", "swish", "relu")
+    return any(k in name for k in keys)
 
 
-def unpack_tl1(packed, n_pairs, n_padded, n, k):
-    """Unpack TL1 transposed format to ternary {-1, 0, +1}."""
-    even = (packed & 0x0F).to(torch.int16)
-    odd = ((packed >> 4) & 0x0F).to(torch.int16)
+def _make_plac(mod, target_mae):
+    """Build PLACFunc by probing the module's forward."""
 
-    idx_t = torch.zeros(n_pairs, n_padded, dtype=torch.int16)
-    idx_t[:, 0::2] = even
-    idx_t[:, 1::2] = odd
-    idx = idx_t.T[:n, :]
+    def fn(x):
+        with torch.no_grad():
+            return mod(x.float()).to(x.dtype)
 
-    w0 = (idx // 3 - 1).to(torch.int8)
-    w1 = (idx % 3 - 1).to(torch.int8)
-    w = torch.stack([w0, w1], dim=2).reshape(n, -1)
-    return w[:, :k]
+    return PLACFunc(fn, -8, 8, target_mae)
 
 
-def quantize_activations(x):
-    """Per-token absmax to int8. Returns (x_int8, scale) where x ~= x_int8 / scale."""
-    scale = 127.0 / x.abs().amax(dim=-1, keepdim=True).clamp(min=1e-5)
-    x_q = (x * scale).round().clamp(-128, 127).to(torch.int8)
-    return x_q, scale
-
-
-class TernaryLinear(nn.Module):
-    """Drop-in nn.Linear replacement. Ternary weights, int8 activations, int32 accumulator."""
-
-    def __init__(self, linear):
+class _PLACModule(nn.Module):
+    def __init__(self, plac):
         super().__init__()
-
-        w_t, scale = quantize_ternary(linear.weight.data.float())
-
-        if hasattr(linear, "weight_scale"):
-            scale = linear.weight_scale.float().squeeze()
-
-        packed, n_pairs, n_padded = pack_tl1(w_t)
-
-        self.register_buffer("w_packed", packed.contiguous())
-        self.register_buffer("w_scale", scale)
-        self.in_features = linear.in_features
-        self.out_features = linear.out_features
-        self.n_pairs = n_pairs
-        self.n_padded = n_padded
-        self.bias = linear.bias
+        self.register_buffer("lut", plac._lut)
+        self.x_lo_fix = plac._x_lo_fix
+        self.shift = plac._shift
 
     def forward(self, x):
-        orig_shape = x.shape
-        x_2d = x.reshape(-1, self.in_features)
-        x_q, x_scale = quantize_activations(x_2d)
-
         lib = load_lib()
-        y_int32 = lib.ternary_gemm(x_q.contiguous(), self.w_packed, self.n_padded, self.n_pairs)[
-            :, : self.out_features
-        ]
+        return lib.plac_float(x.contiguous(), self.lut, self.x_lo_fix, self.shift)
 
-        # x ~= x_q / x_scale, w ~= w_t * w_scale
-        y = y_int32.float() * self.w_scale / x_scale
 
-        if self.bias is not None:
-            y = y + self.bias
+class _RMSNormInt(nn.Module):
+    def __init__(self, norm):
+        super().__init__()
+        gamma = torch.from_numpy(to_fixed(norm.weight.data.double().numpy()))
+        self.register_buffer("gamma_fix", gamma)
 
-        return y.reshape(*orig_shape[:-1], self.out_features)
+    def forward(self, x):
+        lib = load_lib()
+        return lib.rmsnorm_float(x.contiguous(), self.gamma_fix)
+
+
+def _default_filter(mod, fqn):
+    if _is_linear(mod):
+        return "linear"
+
+    if _is_activation(mod):
+        return "activation"
+
+    if _is_rmsnorm(mod):
+        return "rmsnorm"
+
+    return None
+
+
+def quantize(model, skip=None, target_mae=1e-2, filter_fn=None):
+    """
+    Quantize model in-place. Replaces linears, activations, norms.
+
+    skip: module name prefixes to leave in float (default: ["lm_head"])
+    filter_fn: fn(module, fqn) -> "linear"|"activation"|"rmsnorm"|None
+    """
+    skip = skip or ["lm_head"]
+    filter_fn = filter_fn or _default_filter
+
+    replacements = {}
+    skipped = []
+    for name, mod in model.named_modules():
+        if any(name.startswith(s) or name == s for s in skip):
+            skipped.append(name)
+            continue
+
+        kind = filter_fn(mod, name)
+
+        if kind == "linear":
+            linear = _conv1d_to_linear(mod) if not isinstance(mod, nn.Linear) else mod
+            replacements[name] = TernaryLinear(linear)
+
+        elif kind == "activation":
+            replacements[name] = _PLACModule(_make_plac(mod, target_mae))
+
+        elif kind == "rmsnorm":
+            replacements[name] = _RMSNormInt(mod)
+
+    for name, new_mod in replacements.items():
+        model.set_submodule(name, new_mod)
+
+    counts = {}
+    for r in replacements.values():
+        k = type(r).__name__
+        counts[k] = counts.get(k, 0) + 1
+
+    log.info("replaced: %s", ", ".join(f"{v} {k}" for k, v in counts.items()))
+    if skipped:
+        log.info("skipped: %s", ", ".join(skipped))
+
+    return model
