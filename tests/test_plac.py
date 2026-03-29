@@ -1,23 +1,16 @@
+import pytest
 import torch
 
 from smelt.plac import PLACFunc
 
-
-def _silu(x):
-    return torch.nn.functional.silu(x.float()).to(x.dtype)
-
-
-def _gelu(x):
-    return torch.nn.functional.gelu(x.float()).to(x.dtype)
+_ACTS = {
+    "silu": lambda x: torch.nn.functional.silu(x.float()).to(x.dtype),
+    "gelu": lambda x: torch.nn.functional.gelu(x.float()).to(x.dtype),
+}
 
 
-def test_silu():
-    """PLAC SiLU within 2x target MAE."""
-    plac = PLACFunc(_silu, -8, 8, target_mae=1e-2)
-    assert plac.max_error(_silu) < 2e-2
-
-
-def test_gelu():
-    """PLAC GELU within 2x target MAE."""
-    plac = PLACFunc(_gelu, -8, 8, target_mae=1e-2)
-    assert plac.max_error(_gelu) < 2e-2
+@pytest.mark.parametrize("name", _ACTS.keys())
+def test_accuracy(name):
+    fn = _ACTS[name]
+    plac = PLACFunc(fn, -8, 8, target_mae=1e-2)
+    assert plac.max_error(fn) < 2e-2
