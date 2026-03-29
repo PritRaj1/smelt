@@ -114,7 +114,7 @@ void ternary_gemm(const int8_t *x, const uint8_t *w_tl1, int32_t *y, int m, int 
             }
 
             since_flush++;
-            if (since_flush >= 64) {
+            if (since_flush >= 128) {
                 __m256i zero = _mm256_setzero_si256();
                 for (int j = 0; j < n_padded; j += 16) {
                     __m256i a = _mm256_loadu_si256((__m256i *)(acc16 + j));
