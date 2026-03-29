@@ -9,12 +9,14 @@ from ._clib import load_lib
 
 def _is_already_ternary(w):
     """Check if w already {-1, 0, +1} or uint8 {0, 1, 255}."""
-    unique = w.unique()
-    if len(unique) <= 3:
-        vals = set(unique.tolist())
-        return vals <= {-1, 0, 1} or vals <= {0, 1, 255}
+    mn, mx = w.min().item(), w.max().item()
+    if not torch.equal(w, w.round()):
+        return False
 
-    return False
+    if mn >= -1 and mx <= 1:
+        return True
+
+    return mn == 0 and mx in (1, 255)
 
 
 def _decode_uint8_ternary(w):
