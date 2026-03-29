@@ -115,16 +115,33 @@ void ternary_gemm(const int8_t *x, const uint8_t *w_tl1, int32_t *y, int m, int 
 
             since_flush++;
             if (since_flush >= 64) {
-                for (int j = 0; j < n_padded; j++) {
-                    yi[j] += acc16[j];
-                    acc16[j] = 0;
+                __m256i zero = _mm256_setzero_si256();
+                for (int j = 0; j < n_padded; j += 16) {
+                    __m256i a = _mm256_loadu_si256((__m256i *)(acc16 + j));
+                    __m256i lo = _mm256_cvtepi16_epi32(_mm256_castsi256_si128(a));
+                    __m256i hi = _mm256_cvtepi16_epi32(_mm256_extracti128_si256(a, 1));
+                    _mm256_storeu_si256(
+                        (__m256i *)(yi + j),
+                        _mm256_add_epi32(_mm256_loadu_si256((__m256i *)(yi + j)), lo));
+                    _mm256_storeu_si256(
+                        (__m256i *)(yi + j + 8),
+                        _mm256_add_epi32(_mm256_loadu_si256((__m256i *)(yi + j + 8)), hi));
+                    _mm256_storeu_si256((__m256i *)(acc16 + j), zero);
                 }
                 since_flush = 0;
             }
         }
 
-        for (int j = 0; j < n_padded; j++)
-            yi[j] += acc16[j];
+        // final flush
+        for (int j = 0; j < n_padded; j += 16) {
+            __m256i a = _mm256_loadu_si256((__m256i *)(acc16 + j));
+            __m256i lo = _mm256_cvtepi16_epi32(_mm256_castsi256_si128(a));
+            __m256i hi = _mm256_cvtepi16_epi32(_mm256_extracti128_si256(a, 1));
+            _mm256_storeu_si256((__m256i *)(yi + j),
+                                _mm256_add_epi32(_mm256_loadu_si256((__m256i *)(yi + j)), lo));
+            _mm256_storeu_si256((__m256i *)(yi + j + 8),
+                                _mm256_add_epi32(_mm256_loadu_si256((__m256i *)(yi + j + 8)), hi));
+        }
     }
 }
 
