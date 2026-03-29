@@ -1,6 +1,10 @@
 #include <immintrin.h>
 #include <stdint.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #define FRAC 16
 #define ONE (1 << FRAC)
 #define LOG2E_FIX 94548
@@ -48,7 +52,7 @@ static void softmax_row(const int32_t *x, int32_t *y, int n) {
             m = x[i];
 
     // exp + sum (SIMD except int64 widen)
-    int32_t exp_buf[n];
+    int32_t *exp_buf = (int32_t *)alloca(n * sizeof(int32_t));
     int64_t s = 0;
     __m256i vm = _mm256_set1_epi32(m);
     __m256i vlog2e = _mm256_set1_epi32(LOG2E_FIX);
@@ -111,3 +115,7 @@ void softmax_int(const int32_t *x, int32_t *y, int rows, int cols) {
     for (int r = 0; r < rows; r++)
         softmax_row(x + r * cols, y + r * cols, cols);
 }
+
+#ifdef __cplusplus
+}
+#endif

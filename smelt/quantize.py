@@ -1,6 +1,3 @@
-import warnings
-
-import numpy as np
 import torch
 import torch.nn as nn
 
@@ -34,8 +31,7 @@ def quantize_ternary(w):
     """
     if _is_already_ternary(w):
         w_t = _decode_uint8_ternary(w) if w.max() > 1 else w.to(torch.int8)
-        scale = torch.tensor(1.0)
-        return w_t, scale
+        return w_t, torch.tensor(1.0)
 
     scale = w.abs().mean()
     w_t = (w / (scale + 1e-10)).round().clamp(-1, 1).to(torch.int8)
@@ -44,7 +40,7 @@ def quantize_ternary(w):
 
 def pack_tl1(w_t):
     """
-    Pack ternary weights into TL1 format, transposed for vpshufb.
+    Pack ternary into TL1 format, transposed for vpshufb.
 
     Index = (w0+1)*3 + (w1+1) per pair. Two 4-bit indices per byte.
     Layout: [n_pairs, n_padded/2], k-pairs along rows, columns along cols.
@@ -96,29 +92,6 @@ def quantize_activations(x):
     return x_q, scale
 
 
-def _ternary_gemm(x_np, w_np, m, n, n_padded, k, n_pairs):
-    y_np = np.empty((m, n_padded), dtype=np.int32)
-
-    lib = load_lib()
-    if lib is not None:
-        lib.ternary_gemm(
-            x_np.ctypes.data,
-            w_np.ctypes.data,
-            y_np.ctypes.data,
-            m,
-            n_padded,
-            k,
-            n_pairs,
-        )
-        return torch.from_numpy(y_np[:, :n])
-
-    warnings.warn(
-        "C kernel unavailable, using slow torch fallback for ternary GEMM",
-        stacklevel=2,
-    )
-    return None
-
-
 class TernaryLinear(nn.Module):
     """Drop-in nn.Linear replacement. Ternary weights, int8 activations, int32 accumulator."""
 
@@ -127,13 +100,12 @@ class TernaryLinear(nn.Module):
 
         w_t, scale = quantize_ternary(linear.weight.data.float())
 
-        # use stored scale if available (e.g. BitNet weight_scale)
         if hasattr(linear, "weight_scale"):
             scale = linear.weight_scale.float().squeeze()
 
         packed, n_pairs, n_padded = pack_tl1(w_t)
 
-        self.register_buffer("w_packed", packed)
+        self.register_buffer("w_packed", packed.contiguous())
         self.register_buffer("w_scale", scale)
         self.in_features = linear.in_features
         self.out_features = linear.out_features
@@ -141,27 +113,15 @@ class TernaryLinear(nn.Module):
         self.n_padded = n_padded
         self.bias = linear.bias
 
-        self._w_np = np.ascontiguousarray(packed.numpy())
-        self._w_t = w_t  # for fallback
-
     def forward(self, x):
         orig_shape = x.shape
         x_2d = x.reshape(-1, self.in_features)
         x_q, x_scale = quantize_activations(x_2d)
-        x_np = np.ascontiguousarray(x_q.numpy())
 
-        y_int32 = _ternary_gemm(
-            x_np,
-            self._w_np,
-            x_2d.shape[0],
-            self.out_features,
-            self.n_padded,
-            self.in_features,
-            self.n_pairs,
-        )
-
-        if y_int32 is None:
-            y_int32 = x_q.to(torch.int32) @ self._w_t.to(torch.int32).T
+        lib = load_lib()
+        y_int32 = lib.ternary_gemm(x_q.contiguous(), self.w_packed, self.n_padded, self.n_pairs)[
+            :, : self.out_features
+        ]
 
         # x ~= x_q / x_scale, w ~= w_t * w_scale
         y = y_int32.float() * self.w_scale / x_scale

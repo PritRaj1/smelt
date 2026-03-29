@@ -1,5 +1,9 @@
 #include <stdint.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #define FRAC 16
 
 // 1/sqrt(1 + i/256) for i in [0,255], Q16.16
@@ -93,3 +97,7 @@ void layernorm_int_batched(const int32_t *x, const int32_t *gamma, const int32_t
     for (int r = 0; r < rows; r++)
         layernorm_int(x + r * cols, gamma, beta, y + r * cols, cols);
 }
+
+#ifdef __cplusplus
+}
+#endif

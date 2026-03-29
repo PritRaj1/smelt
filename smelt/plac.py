@@ -1,5 +1,4 @@
 import math
-import warnings
 
 import numpy as np
 import torch
@@ -147,7 +146,7 @@ class PLACFunc:
     def __init__(self, f, x_lo, x_hi, target_mae=1e-3, n_terms=2):
         lut, x_lo_fix, shift, bp, slopes, _intercepts, terms = _build_lut(f, x_lo, x_hi, n_terms)
 
-        self._lut = lut
+        self._lut = torch.from_numpy(lut).contiguous()
         self._x_lo_fix = x_lo_fix
         self._shift = shift
         self.breakpoints_f = bp
@@ -160,11 +159,14 @@ class PLACFunc:
         is_torch = isinstance(x, torch.Tensor)
         if is_torch:
             device, dtype = x.device, x.dtype
-            x = x.detach().cpu().numpy()
+            x_np = x.detach().cpu().numpy()
+        else:
+            x_np = x
 
-        orig_shape = x.shape
-        y_fix = self._eval_lut(to_fixed(x.ravel()))
-        y = from_fixed(y_fix).reshape(orig_shape)
+        orig_shape = x_np.shape
+        x_fix = torch.from_numpy(to_fixed(x_np.ravel())).contiguous()
+        y_fix = self._eval(x_fix)
+        y = from_fixed(y_fix.numpy()).reshape(orig_shape)
 
         if is_torch:
             return torch.from_numpy(y).to(device=device, dtype=dtype)
@@ -172,29 +174,12 @@ class PLACFunc:
         return y
 
     def eval_int32(self, x_int32):
-        """Evaluate directly on int32 array."""
-        return self._eval_lut(np.ascontiguousarray(x_int32))
+        """Evaluate on int32 tensor."""
+        return self._eval(x_int32.contiguous())
 
-    def _eval_lut(self, x_fix):
-        n = x_fix.size
-        y = np.empty(n, dtype=np.int32)
-
+    def _eval(self, x_fix):
         lib = load_lib()
-        if lib is not None:
-            lib.plac_eval_lut(
-                x_fix.ctypes.data,
-                y.ctypes.data,
-                n,
-                self._lut.ctypes.data,
-                LUT_SIZE,
-                self._x_lo_fix,
-                self._shift,
-            )
-            return y
-
-        warnings.warn("C kernel unavailable, using numpy fallback for PLAC", stacklevel=3)
-        idx = ((x_fix - self._x_lo_fix) >> self._shift).clip(0, LUT_SIZE - 1)
-        return self._lut[idx]
+        return lib.plac_lut(x_fix, self._lut, self._x_lo_fix, self._shift)
 
     def max_error(self, f, n_samples=10000):
         x = np.linspace(self.breakpoints_f[0], self.breakpoints_f[-1], n_samples)

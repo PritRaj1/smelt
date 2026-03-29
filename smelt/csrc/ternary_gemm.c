@@ -2,6 +2,10 @@
 #include <stdint.h>
 #include <string.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 // y[m,n] = x[m,k] @ w[n,k].T using TL1 LUT + vpshufb
 void ternary_gemm(const int8_t *x, const uint8_t *w_tl1, int32_t *y, int m, int n_padded, int k,
                   int n_pairs) {
@@ -14,7 +18,7 @@ void ternary_gemm(const int8_t *x, const uint8_t *w_tl1, int32_t *y, int m, int 
         memset(yi, 0, n_padded * sizeof(int32_t));
 
         // int16 accumulators, flush every 64 pairs to avoid overflow
-        int16_t acc16[n_padded];
+        int16_t *acc16 = (int16_t *)alloca(n_padded * sizeof(int16_t));
         memset(acc16, 0, n_padded * sizeof(int16_t));
         int since_flush = 0;
 
@@ -90,3 +94,7 @@ void ternary_gemm(const int8_t *x, const uint8_t *w_tl1, int32_t *y, int m, int 
             yi[j] += acc16[j];
     }
 }
+
+#ifdef __cplusplus
+}
+#endif

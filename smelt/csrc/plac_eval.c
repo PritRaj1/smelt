@@ -1,5 +1,9 @@
 #include <stdint.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 // Dense LUT: y = lut[clamp((x - x_lo) >> shift)]
 void plac_eval_lut(const int32_t *x, int32_t *y, int n, const int32_t *lut, int lut_size,
                    int32_t x_lo, int shift) {
@@ -16,3 +20,7 @@ void plac_eval_lut(const int32_t *x, int32_t *y, int n, const int32_t *lut, int 
         y[k] = lut[idx];
     }
 }
+
+#ifdef __cplusplus
+}
+#endif
