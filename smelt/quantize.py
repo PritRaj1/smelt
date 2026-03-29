@@ -7,12 +7,34 @@ import torch.nn as nn
 from ._clib import load_lib
 
 
+def _is_already_ternary(w):
+    """Check if w already {-1, 0, +1} or uint8 {0, 1, 255}."""
+    unique = w.unique()
+    if len(unique) <= 3:
+        vals = set(unique.tolist())
+        return vals <= {-1, 0, 1} or vals <= {0, 1, 255}
+
+    return False
+
+
+def _decode_uint8_ternary(w):
+    """Convert uint8 {0, 1, 255} to int8 {0, +1, -1}."""
+    w = w.to(torch.int16)
+    w[w == 255] = -1
+    return w.to(torch.int8)
+
+
 def quantize_ternary(w):
     """
-    Quantize to {-1, 0, +1} via per-tensor absmean (BitNet b1.58).
+    Quantize to {-1, 0, +1}. Skips already-ternary weights (e.g. BitNet).
 
     Returns (w_ternary, scale) where w ~= scale * w_ternary.
     """
+    if _is_already_ternary(w):
+        w_t = _decode_uint8_ternary(w) if w.max() > 1 else w.to(torch.int8)
+        scale = torch.tensor(1.0)
+        return w_t, scale
+
     scale = w.abs().mean()
     w_t = (w / (scale + 1e-10)).round().clamp(-1, 1).to(torch.int8)
     return w_t, scale

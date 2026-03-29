@@ -38,7 +38,6 @@ uv sync
 
 ## Todo
 
-- load BitNet weight format (autobitlinear -> TL1 packed)
 - int8 attention matmul (Q@K, scores@V)
 - GQA (grouped query attention)
 - QAT fine-tuning (STE for ternary weights)
