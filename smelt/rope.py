@@ -3,19 +3,24 @@ import torch
 FRAC = 16
 
 
-def precompute_freqs(dim, max_seq_len, theta=10000.0):
-    """
-    Sin/cos tables in Q16.16 for RoPE.
-
-    Returns (cos_table, sin_table) each [max_seq_len, dim//2] int32.
-    """
+def _angles(dim, max_seq_len, theta=10000.0):
     freqs = 1.0 / (theta ** (torch.arange(0, dim, 2, dtype=torch.float64) / dim))
     positions = torch.arange(max_seq_len, dtype=torch.float64)
-    angles = positions.unsqueeze(1) * freqs.unsqueeze(0)
+    return positions.unsqueeze(1) * freqs.unsqueeze(0)
 
-    cos_tab = (torch.cos(angles) * (1 << FRAC)).round().to(torch.int32)
-    sin_tab = (torch.sin(angles) * (1 << FRAC)).round().to(torch.int32)
-    return cos_tab, sin_tab
+
+def precompute_freqs(dim, max_seq_len, theta=10000.0):
+    """Sin/cos tables in Q16.16. Returns (cos, sin) each [max_seq_len, dim//2] int32."""
+    angles = _angles(dim, max_seq_len, theta)
+    return (torch.cos(angles) * (1 << FRAC)).round().to(torch.int32), (
+        torch.sin(angles) * (1 << FRAC)
+    ).round().to(torch.int32)
+
+
+def precompute_freqs_float(dim, max_seq_len, theta=10000.0):
+    """Sin/cos tables in float. Returns (cos, sin) each [max_seq_len, dim//2] float32."""
+    angles = _angles(dim, max_seq_len, theta)
+    return torch.cos(angles).float(), torch.sin(angles).float()
 
 
 def rope_int32(x, cos_tab, sin_tab, offset=0):
@@ -44,3 +49,13 @@ def rope_int32(x, cos_tab, sin_tab, offset=0):
     out_odd = (x_even * sin + x_odd * cos) >> FRAC
 
     return torch.cat([out_even, out_odd], dim=-1).to(torch.int32)
+
+
+def rope_float(x, cos_tab, sin_tab, offset=0):
+    """Float RoPE. x: [bsz, seq, n_heads, dim], tables: [max_seq, dim//2]."""
+    seq = x.size(1)
+    half = x.size(-1) // 2
+    c = cos_tab[offset : offset + seq].unsqueeze(0).unsqueeze(2)
+    s = sin_tab[offset : offset + seq].unsqueeze(0).unsqueeze(2)
+    x0, x1 = x[..., :half], x[..., half:]
+    return torch.cat([x0 * c - x1 * s, x0 * s + x1 * c], dim=-1)
