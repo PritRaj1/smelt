@@ -1,3 +1,4 @@
+#include <math.h>
 #include <torch/extension.h>
 
 extern "C" {
@@ -45,27 +46,51 @@ torch::Tensor smelt_layernorm(torch::Tensor x, torch::Tensor gamma, torch::Tenso
     return y.reshape(x.sizes());
 }
 
+// per-row absmax quantize to int8, returns scale per row (127 / max)
+static void quantize_act(const float *x, int8_t *out, float *row_scale, int m, int k) {
+    for (int i = 0; i < m; i++) {
+        const float *row = x + i * k;
+        float mx = 0.0f;
+        for (int j = 0; j < k; j++)
+            mx = fmaxf(mx, fabsf(row[j]));
+
+        float s = 127.0f / fmaxf(mx, 1e-5f);
+        row_scale[i] = s;
+        for (int j = 0; j < k; j++)
+            out[i * k + j] = (int8_t)fminf(fmaxf(roundf(row[j] * s), -128.0f), 127.0f);
+    }
+}
+
+// rescale int32 GEMM output to float: y_float = y_int * (w_scale / row_scale)
+static void rescale_output(const int32_t *y_int, float *y_out, const float *row_scale,
+                           float w_scale, int m, int n_padded, int out_features) {
+    for (int i = 0; i < m; i++) {
+        float s = w_scale / row_scale[i];
+        const int32_t *src = y_int + i * n_padded;
+        float *dst = y_out + i * out_features;
+        for (int j = 0; j < out_features; j++)
+            dst[j] = (float)src[j] * s;
+    }
+}
+
 // float in -> quantize -> ternary GEMM -> rescale -> float out
 torch::Tensor smelt_ternary_linear(torch::Tensor x, torch::Tensor w, int n_padded, int n_pairs,
                                    int out_features, float w_scale) {
     int m = x.size(0);
     int k = x.size(1);
+    const float *xp = x.data_ptr<float>();
 
-    // quantize act to int8 (per-row absmax)
-    auto x_abs = x.abs();
-    auto x_max = std::get<0>(x_abs.max(/*dim=*/1, /*keepdim=*/true));
-    auto x_scale = 127.0f / x_max.clamp_min(1e-5f);
-    auto x_q = (x * x_scale).round().clamp(-128, 127).to(torch::kInt8).contiguous();
+    auto x_q = torch::empty({m, k}, torch::kInt8);
+    float *row_scale = (float *)alloca(m * sizeof(float));
+    quantize_act(xp, x_q.data_ptr<int8_t>(), row_scale, m, k);
 
-    // ternary GEMM
     auto y_int = torch::empty({m, n_padded}, torch::kInt32);
     ternary_gemm(x_q.data_ptr<int8_t>(), w.data_ptr<uint8_t>(), y_int.data_ptr<int32_t>(), m,
                  n_padded, k, n_pairs);
 
-    // rescale: y = y_int * w_scale / x_scale
-    auto y = y_int.index({"...", torch::indexing::Slice(torch::indexing::None, out_features)})
-                 .to(torch::kFloat32) *
-             (w_scale / x_scale);
+    auto y = torch::empty({m, out_features}, torch::kFloat32);
+    rescale_output(y_int.data_ptr<int32_t>(), y.data_ptr<float>(), row_scale, w_scale, m, n_padded,
+                   out_features);
 
     return y;
 }
@@ -73,9 +98,7 @@ torch::Tensor smelt_ternary_linear(torch::Tensor x, torch::Tensor w, int n_padde
 static void float_to_fixed(const float *in, int32_t *out, int n) {
     for (int i = 0; i < n; i++) {
         double v = (double)in[i] * 65536.0;
-        v = v < -(double)(1LL << 31) ? -(double)(1LL << 31) : v;
-        v = v > (double)((1LL << 31) - 1) ? (double)((1LL << 31) - 1) : v;
-        out[i] = (int32_t)(v + (v >= 0 ? 0.5 : -0.5));
+        out[i] = (int32_t)fmin(fmax(round(v), -(double)(1LL << 31)), (double)((1LL << 31) - 1));
     }
 }
 
