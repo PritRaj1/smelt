@@ -13,43 +13,47 @@ def _to_i8(x):
 
 
 def _int8_qkt(q_i8, k_i8):
-    """Batched QK^T via int8 GEMM, per head. [bsz, n_heads, seq, hd] each."""
+    """Batched QK^T via int8 GEMM."""
     lib = load_lib()
     bsz, nh, seq, hd = q_i8.shape
     kv_len = k_i8.size(2)
-    q_flat = q_i8.reshape(bsz * nh, seq, hd)
-    k_flat = k_i8.reshape(bsz * nh, kv_len, hd)
-    out = torch.empty(bsz * nh, seq, kv_len, dtype=torch.int32)
-    for h in range(bsz * nh):
-        out[h] = lib.int8_gemm_t(q_flat[h].contiguous(), k_flat[h].contiguous())
-
-    return out.view(bsz, nh, seq, kv_len)
+    q_flat = q_i8.reshape(bsz * nh, seq, hd).contiguous()
+    k_flat = k_i8.reshape(bsz * nh, kv_len, hd).contiguous()
+    return lib.int8_batched_gemm_t(q_flat, k_flat).view(bsz, nh, seq, kv_len)
 
 
 class KVCache:
-    """Pre-allocated KV cache for autoregressive generation."""
+    """Pre-allocated KV cache. K stored as int8 (quantized once on insert), V as float."""
 
     def __init__(self, max_seq_len, n_kv_heads, head_dim, dtype=torch.float32):
-        self.k = torch.zeros(1, max_seq_len, n_kv_heads, head_dim, dtype=dtype)
+        self.k_i8 = torch.zeros(1, max_seq_len, n_kv_heads, head_dim, dtype=torch.int8)
+        self.k_scale = torch.zeros(1, max_seq_len, n_kv_heads, 1, dtype=dtype)
         self.v = torch.zeros(1, max_seq_len, n_kv_heads, head_dim, dtype=dtype)
         self.pos = 0
 
-    def update(self, k, v):
-        seq = k.size(1)
-        self.k[:, self.pos : self.pos + seq] = k
-        self.v[:, self.pos : self.pos + seq] = v
+    def update(self, k_float, v_float):
+        """Quantize K to int8 on insert. Returns (k_i8, k_scale, v) up to current pos."""
+        seq = k_float.size(1)
+        k_i8, k_s = _to_i8(k_float)
+        self.k_i8[:, self.pos : self.pos + seq] = k_i8
+        self.k_scale[:, self.pos : self.pos + seq] = k_s
+        self.v[:, self.pos : self.pos + seq] = v_float
         self.pos += seq
-        return self.k[:, : self.pos], self.v[:, : self.pos]
+        return (
+            self.k_i8[:, : self.pos],
+            self.k_scale[:, : self.pos],
+            self.v[:, : self.pos],
+        )
 
     def reset(self):
         self.pos = 0
 
 
 class Attention(nn.Module):
-    """
-    Multi-head attention with GQA and KV cache.
+    """Multi-head attention with GQA and KV cache.
 
     QK^T uses int8 GEMM kernel. attn*V and softmax stay float.
+    K quantized to int8 once on cache insert, not re-quantized on each decode step.
     """
 
     def __init__(self, q_proj, k_proj, v_proj, o_proj, n_heads, n_kv_heads=None):
@@ -77,12 +81,12 @@ class Attention(nn.Module):
             q = rope_float(q, cos, sin, offset)
             k = rope_float(k, cos, sin, offset)
 
-        if cache is not None:
-            k, v = cache.update(k, v)
-
-        # quantize to int8
         q_i8, q_s = _to_i8(q)
-        k_i8, k_s = _to_i8(k)
+
+        if cache is not None:
+            k_i8, k_s, v = cache.update(k, v)
+        else:
+            k_i8, k_s = _to_i8(k)
 
         # GQA: expand KV heads
         if self.n_kv_heads < self.n_heads:
@@ -106,7 +110,6 @@ class Attention(nn.Module):
 
         attn = F.softmax(scores, dim=-1)
 
-        # attn*V in float (per-position V scales don't factor out of weighted sum)
         v_f = v.transpose(1, 2)
         out = (attn @ v_f).transpose(1, 2).contiguous().view(bsz, seq, -1)
         return self.o_proj(out)

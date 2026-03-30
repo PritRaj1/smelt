@@ -81,6 +81,12 @@ void int8_gemm_t(const int8_t *a, const int8_t *b, int32_t *c, int m, int n, int
     }
 }
 
+void int8_batched_gemm_t(const int8_t *a, const int8_t *b, int32_t *c, int batch, int m, int n,
+                         int k) {
+    for (int h = 0; h < batch; h++)
+        int8_gemm_t(a + h * m * k, b + h * n * k, c + h * m * n, m, n, k);
+}
+
 #undef TILE_N
 
 #ifdef __cplusplus

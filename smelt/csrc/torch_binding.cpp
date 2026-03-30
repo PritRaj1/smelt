@@ -8,6 +8,7 @@ void softmax_int(const int32_t *, int32_t *, int, int);
 void rmsnorm_int_batched(const int32_t *, const int32_t *, int32_t *, int, int);
 void layernorm_int_batched(const int32_t *, const int32_t *, const int32_t *, int32_t *, int, int);
 void int8_gemm_t(const int8_t *, const int8_t *, int32_t *, int, int, int);
+void int8_batched_gemm_t(const int8_t *, const int8_t *, int32_t *, int, int, int, int);
 }
 
 torch::Tensor smelt_ternary_gemm(torch::Tensor x, torch::Tensor w, int n_padded, int n_pairs) {
@@ -151,10 +152,19 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("softmax", &smelt_softmax);
     m.def("rmsnorm", &smelt_rmsnorm);
     m.def("layernorm", &smelt_layernorm);
+
     m.def("int8_gemm_t", [](torch::Tensor a, torch::Tensor b) {
         int m = a.size(0), n = b.size(0), k = a.size(1);
         auto c = torch::empty({m, n}, torch::kInt32);
         int8_gemm_t(a.data_ptr<int8_t>(), b.data_ptr<int8_t>(), c.data_ptr<int32_t>(), m, n, k);
+        return c;
+    });
+
+    m.def("int8_batched_gemm_t", [](torch::Tensor a, torch::Tensor b) {
+        int batch = a.size(0), m = a.size(1), n = b.size(1), k = a.size(2);
+        auto c = torch::empty({batch, m, n}, torch::kInt32);
+        int8_batched_gemm_t(a.data_ptr<int8_t>(), b.data_ptr<int8_t>(), c.data_ptr<int32_t>(),
+                            batch, m, n, k);
         return c;
     });
 }
