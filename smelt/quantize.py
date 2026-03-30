@@ -105,6 +105,7 @@ def quantize(model, skip=None, target_mae=1e-2, filter_fn=None):
     skip = skip or ["lm_head"]
     filter_fn = filter_fn or _default_filter
 
+    plac_cache = {} # same function -> same LUT
     replacements = {}
     skipped = []
     for name, mod in model.named_modules():
@@ -119,7 +120,10 @@ def quantize(model, skip=None, target_mae=1e-2, filter_fn=None):
             replacements[name] = TernaryLinear(linear)
 
         elif kind == "activation":
-            replacements[name] = _PLACModule(_make_plac(mod, target_mae))
+            cls = type(mod).__name__
+            if cls not in plac_cache:
+                plac_cache[cls] = _make_plac(mod, target_mae)
+            replacements[name] = _PLACModule(plac_cache[cls])
 
         elif kind == "rmsnorm":
             replacements[name] = _RMSNormInt(mod)
