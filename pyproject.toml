@@ -15,6 +15,13 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+train = [
+    "trl>=0.8",
+    "datasets>=2.14",
+]
+bench = [
+    "llama-cpp-python>=0.2",
+]
 notebooks = [
     "matplotlib>=3.7",
     "jupyter",
