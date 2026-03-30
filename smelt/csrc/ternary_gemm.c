@@ -55,7 +55,7 @@ static inline void flush(int16_t *acc, int32_t *y, int n) {
     }
 }
 
-// y[m,n] = x[m,k] @ w[n,k].T — MR=2 microkernel, shared weight loads across row pairs
+// y[m,n] = x[m,k] @ w[n,k].T — TL1 vpshufb + int16 acc + periodic flush
 void ternary_gemm(const int8_t *x, const uint8_t *w_tl1, int32_t *y, int m, int n_padded, int k,
                   int n_pairs) {
     int hn = n_padded / 2;
@@ -63,47 +63,7 @@ void ternary_gemm(const int8_t *x, const uint8_t *w_tl1, int32_t *y, int m, int 
     __m128i mask128 = _mm256_castsi256_si128(mask);
 
 #pragma omp parallel for schedule(dynamic)
-    for (int i = 0; i < (m & ~1); i += 2) {
-        const int8_t *x0 = x + i * k, *x1 = x + (i + 1) * k;
-        int32_t *y0 = y + i * n_padded, *y1 = y + (i + 1) * n_padded;
-        memset(y0, 0, n_padded * sizeof(int32_t));
-        memset(y1, 0, n_padded * sizeof(int32_t));
-        int16_t *a0 = (int16_t *)alloca(n_padded * sizeof(int16_t));
-        int16_t *a1 = (int16_t *)alloca(n_padded * sizeof(int16_t));
-        memset(a0, 0, n_padded * sizeof(int16_t));
-        memset(a1, 0, n_padded * sizeof(int16_t));
-        int sf = 0;
-
-        for (int p = 0; p < n_pairs; p++) {
-            __m256i vlo0, vhi0, vlo1, vhi1;
-            build_lut(x0[p * 2], x0[p * 2 + 1], &vlo0, &vhi0);
-            build_lut(x1[p * 2], x1[p * 2 + 1], &vlo1, &vhi1);
-            const uint8_t *wp = w_tl1 + p * hn;
-
-            int jb;
-            for (jb = 0; jb + 31 < hn; jb += 32) {
-                __m256i widx = _mm256_loadu_si256((__m256i *)(wp + jb));
-                __m256i li = _mm256_and_si256(widx, mask);
-                __m256i hi = _mm256_and_si256(_mm256_srli_epi16(widx, 4), mask);
-                acc_avx2(li, hi, vlo0, vhi0, a0 + jb * 2);
-                acc_avx2(li, hi, vlo1, vhi1, a1 + jb * 2);
-            }
-            for (; jb < hn; jb += 16) {
-                __m128i widx = _mm_loadu_si128((__m128i *)(wp + jb));
-                __m128i li = _mm_and_si128(widx, mask128);
-                __m128i hi = _mm_and_si128(_mm_srli_epi16(widx, 4), mask128);
-                acc_sse(li, hi, _mm256_castsi256_si128(vlo0), _mm256_castsi256_si128(vhi0), a0 + jb * 2);
-                acc_sse(li, hi, _mm256_castsi256_si128(vlo1), _mm256_castsi256_si128(vhi1), a1 + jb * 2);
-            }
-
-            if (++sf >= 128) { flush(a0, y0, n_padded); flush(a1, y1, n_padded); sf = 0; }
-        }
-        flush(a0, y0, n_padded);
-        flush(a1, y1, n_padded);
-    }
-
-    if (m & 1) {
-        int i = m - 1;
+    for (int i = 0; i < m; i++) {
         const int8_t *xi = x + i * k;
         int32_t *yi = y + i * n_padded;
         memset(yi, 0, n_padded * sizeof(int32_t));
@@ -122,7 +82,6 @@ void ternary_gemm(const int8_t *x, const uint8_t *w_tl1, int32_t *y, int m, int 
                 acc_avx2(_mm256_and_si256(widx, mask), _mm256_and_si256(_mm256_srli_epi16(widx, 4), mask),
                          vlo, vhi, acc + jb * 2);
             }
-
             for (; jb < hn; jb += 16) {
                 __m128i widx = _mm_loadu_si128((__m128i *)(wp + jb));
                 acc_sse(_mm_and_si128(widx, mask128), _mm_and_si128(_mm_srli_epi16(widx, 4), mask128),
