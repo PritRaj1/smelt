@@ -80,31 +80,33 @@ class Attention(nn.Module):
         if cache is not None:
             k, v = cache.update(k, v)
 
+        # quantize to int8
+        q_i8, q_s = _to_i8(q)
+        k_i8, k_s = _to_i8(k)
+
         # GQA: expand KV heads
         if self.n_kv_heads < self.n_heads:
             rep = self.n_heads // self.n_kv_heads
-            k = k.unsqueeze(3).expand(-1, -1, -1, rep, -1).reshape(bsz, -1, self.n_heads, hd)
+            k_i8 = k_i8.unsqueeze(3).expand(-1, -1, -1, rep, -1).reshape(bsz, -1, self.n_heads, hd)
+            k_s = k_s.unsqueeze(3).expand(-1, -1, -1, rep, -1).reshape(bsz, -1, self.n_heads, 1)
             v = v.unsqueeze(3).expand(-1, -1, -1, rep, -1).reshape(bsz, -1, self.n_heads, hd)
 
-        # int8 QK^T per head
-        q_i8, q_s = _to_i8(q)
-        k_i8, k_s = _to_i8(k)
         scores = _int8_qkt(q_i8.transpose(1, 2), k_i8.transpose(1, 2)).float()
 
         # rescale: int32 / (q_scale * k_scale) * 1/sqrt(hd)
-        q_s = q_s.transpose(1, 2)  # [bsz, n_heads, seq, 1]
-        k_s = k_s.transpose(1, 2)  # [bsz, n_heads, kv_len, 1]
+        q_s = q_s.transpose(1, 2)
+        k_s = k_s.transpose(1, 2)
         scores = scores * (self.scale / (q_s * k_s.transpose(-2, -1)))
 
         if seq > 1:
-            total = k.size(1)
+            total = k_i8.size(1)
             mask = torch.full((seq, total), float("-inf"), device=x.device)
             mask = torch.triu(mask, diagonal=total - seq + 1)
             scores = scores + mask
 
         attn = F.softmax(scores, dim=-1)
 
-        # attn*V in float (per-position V scales can't be cleanly factored out)
-        v_f = v.transpose(1, 2).float()  # [bsz, n_heads, kv_len, hd]
+        # attn*V in float (per-position V scales don't factor out of weighted sum)
+        v_f = v.transpose(1, 2)
         out = (attn @ v_f).transpose(1, 2).contiguous().view(bsz, seq, -1)
         return self.o_proj(out)
