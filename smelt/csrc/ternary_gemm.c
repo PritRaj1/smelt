@@ -33,17 +33,22 @@ static inline void acc_avx2(__m256i li, __m256i hi, __m256i vlo, __m256i vhi, in
     __m256i eb = _mm256_unpackhi_epi8(_mm256_shuffle_epi8(vlo, li), _mm256_shuffle_epi8(vhi, li));
     __m256i oa = _mm256_unpacklo_epi8(_mm256_shuffle_epi8(vlo, hi), _mm256_shuffle_epi8(vhi, hi));
     __m256i ob = _mm256_unpackhi_epi8(_mm256_shuffle_epi8(vlo, hi), _mm256_shuffle_epi8(vhi, hi));
-    _mm256_storeu_si256((__m256i *)d, _mm256_add_epi16(_mm256_loadu_si256((__m256i *)d),
-                                                       _mm256_unpacklo_epi16(ea, oa)));
-    _mm256_storeu_si256(
-        (__m256i *)(d + 16),
-        _mm256_add_epi16(_mm256_loadu_si256((__m256i *)(d + 16)), _mm256_unpackhi_epi16(ea, oa)));
-    _mm256_storeu_si256(
-        (__m256i *)(d + 32),
-        _mm256_add_epi16(_mm256_loadu_si256((__m256i *)(d + 32)), _mm256_unpacklo_epi16(eb, ob)));
-    _mm256_storeu_si256(
-        (__m256i *)(d + 48),
-        _mm256_add_epi16(_mm256_loadu_si256((__m256i *)(d + 48)), _mm256_unpackhi_epi16(eb, ob)));
+
+    // unpack interleaves within 128-bit lanes, need permute2x128 to fix column order
+    __m256i r0 = _mm256_unpacklo_epi16(ea, oa);
+    __m256i r1 = _mm256_unpackhi_epi16(ea, oa);
+    __m256i r2 = _mm256_unpacklo_epi16(eb, ob);
+    __m256i r3 = _mm256_unpackhi_epi16(eb, ob);
+
+    __m256i o0 = _mm256_permute2x128_si256(r0, r1, 0x20); // cols 0-15
+    __m256i o1 = _mm256_permute2x128_si256(r2, r3, 0x20); // cols 16-31
+    __m256i o2 = _mm256_permute2x128_si256(r0, r1, 0x31); // cols 32-47
+    __m256i o3 = _mm256_permute2x128_si256(r2, r3, 0x31); // cols 48-63
+
+    _mm256_storeu_si256((__m256i *)d, _mm256_add_epi16(_mm256_loadu_si256((__m256i *)d), o0));
+    _mm256_storeu_si256((__m256i *)(d + 16), _mm256_add_epi16(_mm256_loadu_si256((__m256i *)(d + 16)), o1));
+    _mm256_storeu_si256((__m256i *)(d + 32), _mm256_add_epi16(_mm256_loadu_si256((__m256i *)(d + 32)), o2));
+    _mm256_storeu_si256((__m256i *)(d + 48), _mm256_add_epi16(_mm256_loadu_si256((__m256i *)(d + 48)), o3));
 }
 
 // SSE version for <32-byte tail

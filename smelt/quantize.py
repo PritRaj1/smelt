@@ -105,7 +105,7 @@ def quantize(model, skip=None, target_mae=1e-2, filter_fn=None):
     skip = skip or ["lm_head"]
     filter_fn = filter_fn or _default_filter
 
-    plac_cache = {} # same function -> same LUT
+    plac_cache = {}  # same function -> same LUT
     replacements = {}
     skipped = []
     for name, mod in model.named_modules():
