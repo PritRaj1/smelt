@@ -21,6 +21,12 @@
 
 - [PTQTP: Post-Training Quantization to Trit-Planes](https://arxiv.org/abs/2509.16989)
 
+## Table Lookup GEMM
+
+- [T-MAC: CPU Renaissance via Table Lookup for Low-Bit LLM Deployment](https://arxiv.org/abs/2407.00088)
+- [BitNet.cpp: Efficient Edge Inference for Ternary LLMs](https://arxiv.org/abs/2410.16144)
+- [T-SAR: Full-Stack Co-design for CPU-Only Ternary LLM Inference](https://arxiv.org/abs/2511.13676)
+
 ## x86 SIMD
 
 - [Intel Guide (AVX2 one)](https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html)

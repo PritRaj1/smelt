@@ -7,12 +7,6 @@ from .matmul import TernaryLinear, quantize_activations
 from .rope import rope_float
 
 
-def _to_i8(x):
-    """Per-vector absmax quantize. x: [..., dim] -> (int8, scale[..., 1])."""
-    scale = 127.0 / x.abs().amax(dim=-1, keepdim=True).clamp(min=1e-5)
-    return (x * scale).round().clamp(-128, 127).to(torch.int8), scale
-
-
 def _int8_qkt(q_i8, k_i8):
     """Batched QK^T via int8 GEMM."""
     lib = load_lib()
@@ -35,7 +29,7 @@ class KVCache:
     def update(self, k_float, v_float):
         """Quantize K to int8 on insert. Returns (k_i8, k_scale, v) up to current pos."""
         seq = k_float.size(1)
-        k_i8, k_s = _to_i8(k_float)
+        k_i8, k_s = quantize_activations(k_float)
         self.k_i8[:, self.pos : self.pos + seq] = k_i8
         self.k_scale[:, self.pos : self.pos + seq] = k_s
         self.v[:, self.pos : self.pos + seq] = v_float
@@ -51,7 +45,8 @@ class KVCache:
 
 
 class Attention(nn.Module):
-    """Multi-head attention with GQA and KV cache.
+    """
+    Multi-head attention with GQA and KV cache.
 
     QK^T uses int8 GEMM kernel. attn*V and softmax stay float.
     K quantized to int8 once on cache insert, not re-quantized on each decode step.
@@ -92,12 +87,13 @@ class Attention(nn.Module):
             q = rope_float(q, cos, sin, offset)
             k = rope_float(k, cos, sin, offset)
 
-        q_i8, q_s = _to_i8(q)
+        q_i8, q_s = quantize_activations(q)
 
         if cache is not None:
             k_i8, k_s, v = cache.update(k, v)
+
         else:
-            k_i8, k_s = _to_i8(k)
+            k_i8, k_s = quantize_activations(k)
 
         # GQA: expand KV heads
         if self.n_kv_heads < self.n_heads:
