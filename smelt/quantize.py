@@ -17,6 +17,7 @@ _SKIP_ACT_NAMES = {"relusquared"}
 def _is_linear(mod):
     if isinstance(mod, nn.Linear):
         return True
+
     return type(mod).__name__ == "Conv1D" and hasattr(mod, "nf")
 
 
@@ -90,6 +91,7 @@ class _Int8Linear(nn.Module):
 
         if self.bias is not None:
             y = y + self.bias
+
         return y.reshape(*orig[:-1], self.out_features)
 
 
@@ -104,9 +106,10 @@ def _default_filter(mod, fqn):
 
 
 def quantize(model, skip=None, target_mae=1e-2, filter_fn=None):
-    """Quantize model in-place. Replaces linears and activations.
+    """
+    Quantize model in-place. Replaces linears and activations.
 
-    skip: module name prefixes to leave in float (default: ["lm_head"])
+    skip: module name prefixes to leave in float (default: [])
     filter_fn: fn(module, fqn) -> "linear"|"activation"|None
     """
     skip = skip or []

@@ -109,24 +109,6 @@ static void fixed_to_float(const int32_t *in, float *out, int n) {
         out[i] = (float)((double)in[i] / 65536.0);
 }
 
-torch::Tensor smelt_rmsnorm_float(torch::Tensor x, torch::Tensor gamma_fix) {
-    int dim = x.size(-1);
-    auto x2 = x.reshape({-1, dim}).contiguous();
-    int rows = x2.size(0);
-    int n = rows * dim;
-
-    auto x_fix = torch::empty({rows, dim}, torch::kInt32);
-    auto y_fix = torch::empty_like(x_fix);
-    auto y_out = torch::empty_like(x2);
-
-    float_to_fixed(x2.data_ptr<float>(), x_fix.data_ptr<int32_t>(), n);
-    rmsnorm_int_batched(x_fix.data_ptr<int32_t>(), gamma_fix.data_ptr<int32_t>(),
-                        y_fix.data_ptr<int32_t>(), rows, dim);
-    fixed_to_float(y_fix.data_ptr<int32_t>(), y_out.data_ptr<float>(), n);
-
-    return y_out.reshape(x.sizes());
-}
-
 torch::Tensor smelt_plac_float(torch::Tensor x, torch::Tensor lut, int x_lo, int shift) {
     auto flat = x.reshape({-1}).contiguous();
     int n = flat.numel();
@@ -165,7 +147,6 @@ static torch::Tensor smelt_ternary_linear_i8(torch::Tensor x_i8, float act_scale
 }
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
-    m.def("rmsnorm_float", &smelt_rmsnorm_float);
     m.def("plac_float", &smelt_plac_float);
     m.def("ternary_linear", &smelt_ternary_linear);
     m.def("ternary_gemm", &smelt_ternary_gemm);
