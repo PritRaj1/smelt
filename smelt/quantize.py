@@ -4,8 +4,9 @@ import torch
 import torch.nn as nn
 
 from ._clib import load_lib
-from .matmul import TernaryLinear
+from .matmul import TernaryLinear, _is_already_ternary
 from .plac import PLACFunc, to_fixed
+from .ptqtp import DualTernaryLinear
 
 log = logging.getLogger(__name__)
 
@@ -124,7 +125,11 @@ def quantize(model, skip=None, target_mae=1e-2, filter_fn=None):
 
         if kind == "linear":
             linear = _conv1d_to_linear(mod) if not isinstance(mod, nn.Linear) else mod
-            replacements[name] = TernaryLinear(linear)
+            if _is_already_ternary(linear.weight.data.float()):
+                replacements[name] = TernaryLinear(linear)
+
+            else:
+                replacements[name] = DualTernaryLinear(linear)
 
         elif kind == "activation":
             cls = type(mod).__name__

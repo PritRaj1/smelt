@@ -11,6 +11,7 @@ from transformers import (
 
 import smelt
 from smelt.matmul import TernaryLinear
+from smelt.ptqtp import DualTernaryLinear
 
 _MODELS = {
     "gpt2": lambda: GPT2LMHeadModel(GPT2Config(n_layer=2, n_head=4, n_embd=128, vocab_size=1000)),
@@ -35,13 +36,15 @@ _MODELS = {
     ),
 }
 
+_QUANTIZED = (TernaryLinear, DualTernaryLinear)
+
 
 @pytest.mark.parametrize("arch", _MODELS.keys())
 def test_convert(arch):
     model = _MODELS[arch]()
     smelt.quantize(model)
 
-    n = sum(1 for m in model.modules() if isinstance(m, TernaryLinear))
+    n = sum(1 for m in model.modules() if isinstance(m, _QUANTIZED))
     assert n > 0, f"no layers converted for {arch}"
 
     out = model(torch.randint(0, 1000, (1, 16)))
@@ -53,4 +56,4 @@ def test_skip():
     smelt.quantize(model, skip=["lm_head", "model.layers.0"])
 
     assert isinstance(model.model.layers[0].self_attn.q_proj, torch.nn.Linear)
-    assert isinstance(model.model.layers[1].self_attn.q_proj, TernaryLinear)
+    assert isinstance(model.model.layers[1].self_attn.q_proj, _QUANTIZED)
