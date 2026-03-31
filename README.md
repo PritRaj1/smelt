@@ -3,7 +3,7 @@
 Fast CPU inference for ternary LLMs. 
 
 - Pack any already-ternary HuggingFace model (BitNet, Falcon-E) into TL1 format with AVX2 SIMD kernels.
-- Can also smelt float/arbitrary with pretrained models, [PTQTP](https://arxiv.org/abs/2509.16989) two-plane decomposition provides 9x better reconstruction than absmean.
+- Can also smelt float/arbitrary pretreined models using [PTQTP](https://arxiv.org/abs/2509.16989) two-plane decomposition, provides 9x better reconstruction than absmean.
   
 ```python
 import smelt
