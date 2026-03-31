@@ -11,15 +11,17 @@ smelt.quantize(model)
 model.generate(...)
 ```
 
+For float/arbitrary pretrained models, [PTQTP](https://arxiv.org/abs/2509.16989) two-plane decomposition provides 9x better reconstruction than absmean.
+
 ## Kernels
 
 | op | technique |
 |:---|:---|
-| ternary GEMM | TL1 LUT + vpshufb + int16 acc + OpenMP |
+| ternary GEMM | TL1 precomputed LUT + vpshufb + int16 acc + OpenMP |
+| int8 lm_head | tiled int8 GEMV (3.9x over float) |
 | int8 attention (QK^T) | tiled dot products + AVX2 madd_epi16 |
 | SiLU/GELU | PLAC: piecewise linear, dense LUT |
 | softmax | base-2 exp LUT + AVX2 gather + reciprocal multiply |
-| RoPE | precomputed sin/cos tables |
 
 ## Training
 
@@ -36,6 +38,5 @@ uv pip install -e ".[notebooks]"  # matplotlib + jupyter
 
 ## Todo
 
-- PTQTP (post-training float -> ternary, code pending upstream release)
 - NEON fallback (ARM / Apple Silicon)
 - model serialization (save/load without re-quantizing)
