@@ -1,47 +1,41 @@
 # smelt
 
-Integer-only LLM inference. Quantize any HuggingFace model to ternary weights + int8 activations. Run on CPU with zero float ops in the forward pass.
+Fast CPU inference for ternary LLMs. Pack any already-ternary HuggingFace model (BitNet, Falcon-E) into TL1 format with AVX2 SIMD kernels.
 
 ```python
 import smelt
 from transformers import AutoModelForCausalLM
 
-model = AutoModelForCausalLM.from_pretrained("gpt2")
+model = AutoModelForCausalLM.from_pretrained("microsoft/bitnet-b1.58-2B-4T")
 smelt.quantize(model)
 model.generate(...)
 ```
 
-## Pipeline
-
-```
-int8 -> ternary GEMM (int32) -> activation (int32 shifts) -> rescale to int8 -> next layer
-```
-
-Unlike BitNet.cpp which converts to float for activations and norms, smelt stays integer throughout.
+## Kernels
 
 | op | technique |
-|:---|:----------|
-| linear | TL1 LUT + vpshufb + OpenMP |
-| SiLU/GELU | PLAC: bit-shift piecewise linear, dense LUT |
+|:---|:---|
+| ternary GEMM | TL1 LUT + vpshufb + int16 acc + OpenMP |
+| int8 attention (QK^T) | tiled dot products + AVX2 madd_epi16 |
+| SiLU/GELU | PLAC: piecewise linear, dense LUT |
 | softmax | base-2 exp LUT + AVX2 gather + reciprocal multiply |
-| RMSNorm | clz + isqrt LUT |
-| LayerNorm | mean + clz + isqrt LUT |
-| RoPE | precomputed sin/cos in Q16.16 |
+| RoPE | precomputed sin/cos tables |
 
-All C kernels compiled on first use: `gcc -O3 -march=native -flto -fopenmp`.
+## Training
+
+smelt is inference-only. Train ternary models with [onebitllms](https://github.com/tiiuae/onebitllms), then pack with `smelt.quantize()`.
 
 ## Install
 
 ```
 uv sync
+uv pip install -e ".[train]"      # onebitllms + trl + datasets
+uv pip install -e ".[bench]"      # llama-cpp-python
+uv pip install -e ".[notebooks]"  # matplotlib + jupyter
 ```
 
 ## Todo
 
-- int8 attention matmul (Q@K, scores@V)
-- GQA (grouped query attention)
-- QAT fine-tuning (STE for ternary weights)
-- Falcon-Edge / MatMul-free LM support
+- PTQTP (post-training float -> ternary, code pending upstream release)
 - NEON fallback (ARM / Apple Silicon)
-- fused layer C kernels
-- model serialization
+- model serialization (save/load without re-quantizing)

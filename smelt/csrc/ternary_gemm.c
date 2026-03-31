@@ -46,9 +46,12 @@ static inline void acc_avx2(__m256i li, __m256i hi, __m256i vlo, __m256i vhi, in
     __m256i o3 = _mm256_permute2x128_si256(r2, r3, 0x31); // cols 48-63
 
     _mm256_storeu_si256((__m256i *)d, _mm256_add_epi16(_mm256_loadu_si256((__m256i *)d), o0));
-    _mm256_storeu_si256((__m256i *)(d + 16), _mm256_add_epi16(_mm256_loadu_si256((__m256i *)(d + 16)), o1));
-    _mm256_storeu_si256((__m256i *)(d + 32), _mm256_add_epi16(_mm256_loadu_si256((__m256i *)(d + 32)), o2));
-    _mm256_storeu_si256((__m256i *)(d + 48), _mm256_add_epi16(_mm256_loadu_si256((__m256i *)(d + 48)), o3));
+    _mm256_storeu_si256((__m256i *)(d + 16),
+                        _mm256_add_epi16(_mm256_loadu_si256((__m256i *)(d + 16)), o1));
+    _mm256_storeu_si256((__m256i *)(d + 32),
+                        _mm256_add_epi16(_mm256_loadu_si256((__m256i *)(d + 32)), o2));
+    _mm256_storeu_si256((__m256i *)(d + 48),
+                        _mm256_add_epi16(_mm256_loadu_si256((__m256i *)(d + 48)), o3));
 }
 
 // SSE version for <32-byte tail
