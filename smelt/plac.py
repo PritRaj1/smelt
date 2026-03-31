@@ -7,7 +7,6 @@ from ._clib import load_lib
 
 FRAC_BITS = 16
 SCALE = 1 << FRAC_BITS
-LUT_SIZE = 4096
 
 
 def to_fixed(x):
@@ -108,78 +107,60 @@ def auto_segment(f, x_lo, x_hi, target_mae, n_terms=2, tol=1e-6):
     return breakpoints
 
 
-def _build_lut(f, x_lo, x_hi, n_terms):
-    """Build dense LUT from PLAC segments."""
-    bp = auto_segment(f, x_lo, x_hi, target_mae=1e-3, n_terms=n_terms)
-    slopes, intercepts, terms = fit_pwl(f, bp, n_terms)
-
-    x_lo_fix = to_fixed(np.array([x_lo]))[0]
-    x_hi_fix = to_fixed(np.array([x_hi]))[0]
-    range_fix = x_hi_fix - x_lo_fix
-
-    # shift so that (x - x_lo) >> shift maps to [0, LUT_SIZE)
-    shift = 0
-    while (range_fix >> shift) > LUT_SIZE:
-        shift += 1
-
-    lut = np.empty(LUT_SIZE, dtype=np.int32)
-    bp_inner = np.array(bp[1:])
-    intercepts_arr = np.array(intercepts)
-
-    for i in range(LUT_SIZE):
-        x_fix = x_lo_fix + (i << shift) + (1 << (shift - 1) if shift > 0 else 0)
-        x_float = x_fix / SCALE
-        seg = int(np.searchsorted(bp_inner, x_float).clip(0, len(slopes) - 1))
-
-        acc = 0
-        for sign, exp in terms[seg]:
-            shifted = x_fix << exp if exp >= 0 else x_fix >> (-exp)
-            acc += sign * shifted
-        lut[i] = np.int32(acc + to_fixed(np.array([intercepts_arr[seg]]))[0])
-
-    return np.ascontiguousarray(lut), x_lo_fix, shift, bp, slopes, intercepts, terms
-
-
 class PLACFunc:
-    """Piecewise linear approx with shift-constrained slopes. Dense LUT eval."""
+    """Piecewise linear approx with shift-constrained slopes. Direct segment eval."""
 
     def __init__(self, f, x_lo, x_hi, target_mae=1e-3, n_terms=2):
-        lut, x_lo_fix, shift, bp, slopes, _intercepts, terms = _build_lut(f, x_lo, x_hi, n_terms)
+        bp = auto_segment(f, x_lo, x_hi, target_mae, n_terms)
+        slopes, intercepts, terms = fit_pwl(f, bp, n_terms)
 
-        self._lut = torch.from_numpy(lut).contiguous()
-        self._x_lo_fix = x_lo_fix
-        self._shift = shift
         self.breakpoints_f = bp
         self.terms = terms
         self.n_segments = len(slopes)
         self.n_terms = n_terms
 
+        # segment arrays for AVX2 eval
+        self._breakpoints = torch.from_numpy(to_fixed(np.array(bp))).contiguous()
+        self._intercepts = torch.from_numpy(to_fixed(np.array(intercepts))).contiguous()
+        signs = np.zeros(len(slopes) * 2, dtype=np.int32)
+        exps = np.zeros(len(slopes) * 2, dtype=np.int32)
+        for i, seg_terms in enumerate(terms):
+            for t, (sign, exp) in enumerate(seg_terms):
+                if t < 2:
+                    signs[i * 2 + t] = sign
+                    exps[i * 2 + t] = exp
+
+        self._signs = torch.from_numpy(signs).contiguous()
+        self._exps = torch.from_numpy(exps).contiguous()
+
     def __call__(self, x):
-        """Evaluate. Accepts float numpy/torch."""
         is_torch = isinstance(x, torch.Tensor)
         if is_torch:
             device, dtype = x.device, x.dtype
-            x_np = x.detach().cpu().numpy()
-        else:
-            x_np = x
+            lib = load_lib()
+            return lib.plac_segments_float(
+                x.contiguous(),
+                self._breakpoints,
+                self._intercepts,
+                self._signs,
+                self._exps,
+                self.n_segments,
+            ).to(device=device, dtype=dtype)
 
-        orig_shape = x_np.shape
-        x_fix = torch.from_numpy(to_fixed(x_np.ravel())).contiguous()
-        y_fix = self._eval(x_fix)
-        y = from_fixed(y_fix.numpy()).reshape(orig_shape)
-
-        if is_torch:
-            return torch.from_numpy(y).to(device=device, dtype=dtype)
-
-        return y
+        x_t = torch.from_numpy(np.asarray(x, dtype=np.float32))
+        lib = load_lib()
+        y = lib.plac_segments_float(
+            x_t.contiguous(), self._breakpoints, self._intercepts,
+            self._signs, self._exps, self.n_segments,
+        )
+        return y.numpy()
 
     def eval_int32(self, x_int32):
-        """Evaluate on int32 tensor."""
-        return self._eval(x_int32.contiguous())
-
-    def _eval(self, x_fix):
         lib = load_lib()
-        return lib.plac_lut(x_fix, self._lut, self._x_lo_fix, self._shift)
+        return lib.plac_segments_int32(
+            x_int32.contiguous(), self._breakpoints, self._intercepts,
+            self._signs, self._exps, self.n_segments,
+        )
 
     def max_error(self, f, n_samples=10000):
         x = np.linspace(self.breakpoints_f[0], self.breakpoints_f[-1], n_samples)

@@ -59,13 +59,18 @@ def _make_plac(mod, target_mae):
 class _PLACModule(nn.Module):
     def __init__(self, plac):
         super().__init__()
-        self.register_buffer("lut", plac._lut)
-        self.x_lo_fix = plac._x_lo_fix
-        self.shift = plac._shift
+        self.register_buffer("_breakpoints", plac._breakpoints)
+        self.register_buffer("_intercepts", plac._intercepts)
+        self.register_buffer("_signs", plac._signs)
+        self.register_buffer("_exps", plac._exps)
+        self.n_segments = plac.n_segments
 
     def forward(self, x):
         lib = load_lib()
-        return lib.plac_float(x.contiguous(), self.lut, self.x_lo_fix, self.shift)
+        return lib.plac_segments_float(
+            x.contiguous(), self._breakpoints, self._intercepts,
+            self._signs, self._exps, self.n_segments,
+        )
 
 
 class _Int8Linear(nn.Module):
