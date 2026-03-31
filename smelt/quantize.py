@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 
 from ._clib import load_lib
-from .matmul import TernaryLinear, _is_already_ternary
+from .matmul import TernaryLinear, _is_already_ternary, quantize_activations
 from .plac import PLACFunc
 from .ptqtp import DualTernaryLinear
 
@@ -67,6 +67,32 @@ class _PLACModule(nn.Module):
         return lib.plac_float(x.contiguous(), self.lut, self.x_lo_fix, self.shift)
 
 
+class _Int8Linear(nn.Module):
+    """Int8 GEMV for large output projections (lm_head)."""
+
+    def __init__(self, linear):
+        super().__init__()
+        w_i8, w_s = quantize_activations(linear.weight.data.float())
+        self.register_buffer("w_i8", w_i8.contiguous())
+        self.register_buffer("w_scale", w_s.squeeze(1))
+        self.in_features = linear.in_features
+        self.out_features = linear.out_features
+        self.bias = linear.bias
+
+    def forward(self, x):
+        orig = x.shape
+        x_2d = x.reshape(-1, self.in_features)
+        x_i8, x_s = quantize_activations(x_2d)
+
+        lib = load_lib()
+        y_int = lib.int8_gemm_t(x_i8.contiguous(), self.w_i8)
+        y = y_int.float() / (self.w_scale * x_s)
+
+        if self.bias is not None:
+            y = y + self.bias
+        return y.reshape(*orig[:-1], self.out_features)
+
+
 def _default_filter(mod, fqn):
     if _is_linear(mod):
         return "linear"
@@ -83,7 +109,7 @@ def quantize(model, skip=None, target_mae=1e-2, filter_fn=None):
     skip: module name prefixes to leave in float (default: ["lm_head"])
     filter_fn: fn(module, fqn) -> "linear"|"activation"|None
     """
-    skip = skip or ["lm_head"]
+    skip = skip or []
     filter_fn = filter_fn or _default_filter
 
     plac_cache = {}
@@ -92,6 +118,10 @@ def quantize(model, skip=None, target_mae=1e-2, filter_fn=None):
     for name, mod in model.named_modules():
         if any(name.startswith(s) or name == s for s in skip):
             skipped.append(name)
+            continue
+
+        if name == "lm_head" and isinstance(mod, nn.Linear):
+            replacements[name] = _Int8Linear(mod)
             continue
 
         kind = filter_fn(mod, name)
