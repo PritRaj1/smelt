@@ -16,7 +16,8 @@ dependencies = [
 
 [project.optional-dependencies]
 train = [
-    "trl>=0.8",
+    "onebitllms",
+    "trl>=1.0",
     "datasets>=2.14",
 ]
 bench = [

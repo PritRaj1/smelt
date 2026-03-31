@@ -2278,6 +2278,24 @@ wheels = [
 ]
 
 [[package]]
+name = "onebitllms"
+version = "0.0.3"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "accelerate" },
+    { name = "huggingface-hub" },
+    { name = "safetensors" },
+    { name = "setuptools" },
+    { name = "torch" },
+    { name = "tqdm" },
+    { name = "transformers" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/40/24/b0accfcbf8005ddd7da0bac258f40071270165c9961919e10fa6c75b1926/onebitllms-0.0.3.tar.gz", hash = "sha256:e29b66bd93a76226dc52878f8ea04eee55423041beea868ecbd0f9f97bf42b7d", size = 18293, upload-time = "2025-05-19T12:55:15.38Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/27/ea/7d62bc7c098e5e7d65939a89415a25468e50ed583285630809feba8d3148/onebitllms-0.0.3-py3-none-any.whl", hash = "sha256:a177b58a508f1635985b2f14588206161826b14fd2ea800bff19f742f2bc5f15", size = 18832, upload-time = "2025-05-19T12:55:14.323Z" },
+]
+
+[[package]]
 name = "overrides"
 version = "7.7.0"
 source = { registry = "https://pypi.org/simple" }
@@ -3296,6 +3314,7 @@ notebooks = [
 ]
 train = [
     { name = "datasets" },
+    { name = "onebitllms" },
     { name = "trl" },
 ]
 
@@ -3314,10 +3333,11 @@ requires-dist = [
     { name = "matplotlib", marker = "extra == 'notebooks'", specifier = ">=3.7" },
     { name = "ninja" },
     { name = "numpy", specifier = ">=1.26" },
+    { name = "onebitllms", marker = "extra == 'train'" },
     { name = "safetensors", specifier = ">=0.4" },
     { name = "torch", specifier = ">=2.1" },
     { name = "transformers", specifier = ">=4.36" },
-    { name = "trl", marker = "extra == 'train'", specifier = ">=0.8" },
+    { name = "trl", marker = "extra == 'train'", specifier = ">=1.0" },
 ]
 provides-extras = ["train", "bench", "notebooks"]
 
@@ -3540,7 +3560,7 @@ wheels = [
 
 [[package]]
 name = "trl"
-version = "0.29.1"
+version = "1.0.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "accelerate" },
@@ -3548,9 +3568,9 @@ dependencies = [
     { name = "packaging" },
     { name = "transformers" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/3f/01/87b09019a9be4c73f8fb07ac9db1dccbeb78743fc17b6f3175ebe0a31a70/trl-0.29.1.tar.gz", hash = "sha256:12df5aa22d1deb26942cafdf4cfd75f53d7141942e70c4dc0966687a3617813b", size = 453604, upload-time = "2026-03-20T03:43:34.578Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/cf/38/8d2cefaa1bb2089dee5a969b24ed14aa519a162c8b169d7991a9a8a18bfe/trl-1.0.0.tar.gz", hash = "sha256:529f447b77007c8d181a3cf3d8b1b6427888cac9ee1e6d583bd0dbda78165ed4", size = 536166, upload-time = "2026-03-30T21:17:37.261Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/c7/3b/33226ae50a36f718e1107ece0c91b016457bb4b956d1cb5bd7078c04de9c/trl-0.29.1-py3-none-any.whl", hash = "sha256:f9490cd1af93f3dce1cfdfe0fa1de108dbc46a2f6c2f90485cc2b4021c43eef3", size = 530959, upload-time = "2026-03-20T03:43:33.02Z" },
+    { url = "https://files.pythonhosted.org/packages/e2/1c/9ac86f514e53935c06b6002ada9144b545ebee5230d60a5b950b18408be5/trl-1.0.0-py3-none-any.whl", hash = "sha256:c45700cb6aa8723e5db1dd8773297f642715accab1ca7754b56e6d50a37dfb1d", size = 630815, upload-time = "2026-03-30T21:17:35.274Z" },
 ]
 
 [[package]]

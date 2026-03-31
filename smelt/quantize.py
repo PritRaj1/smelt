@@ -33,9 +33,15 @@ def _is_rmsnorm(mod):
     return hasattr(mod, "weight") and not hasattr(mod, "bias") and "RMSNorm" in type(mod).__name__
 
 
+_SKIP_ACT_NAMES = {"relusquared"}
+
+
 def _is_activation(mod):
     """Leaf module, no parameters, likely an activation."""
     if type(mod) in _SKIP_ACTS:
+        return False
+
+    if any(s in type(mod).__name__.lower() for s in _SKIP_ACT_NAMES):
         return False
 
     if len(list(mod.children())) > 0:
@@ -89,8 +95,9 @@ def _default_filter(mod, fqn):
     if _is_activation(mod):
         return "activation"
 
-    if _is_rmsnorm(mod):
-        return "rmsnorm"
+    # integer norm disabled: Q16.16 precision loss compounds across layers
+    # if _is_rmsnorm(mod):
+    #     return "rmsnorm"
 
     return None
 

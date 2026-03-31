@@ -200,6 +200,7 @@ def terms_to_str(terms):
         shift = f"x>>{-exp}" if exp < 0 else ("x" if exp == 0 else f"x<<{exp}")
         if i == 0:
             parts.append(f"-{shift}" if sign < 0 else shift)
+
         else:
             parts.append(f" - {shift}" if sign < 0 else f" + {shift}")
 
