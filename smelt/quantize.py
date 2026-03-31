@@ -5,19 +5,18 @@ import torch.nn as nn
 
 from ._clib import load_lib
 from .matmul import TernaryLinear, _is_already_ternary
-from .plac import PLACFunc, to_fixed
+from .plac import PLACFunc
 from .ptqtp import DualTernaryLinear
 
 log = logging.getLogger(__name__)
 
-# already int-friendly, no PLAC needed
 _SKIP_ACTS = {nn.ReLU, nn.Identity, nn.Dropout}
+_SKIP_ACT_NAMES = {"relusquared"}
 
 
 def _is_linear(mod):
     if isinstance(mod, nn.Linear):
         return True
-
     return type(mod).__name__ == "Conv1D" and hasattr(mod, "nf")
 
 
@@ -30,15 +29,7 @@ def _conv1d_to_linear(mod):
     return linear
 
 
-def _is_rmsnorm(mod):
-    return hasattr(mod, "weight") and not hasattr(mod, "bias") and "RMSNorm" in type(mod).__name__
-
-
-_SKIP_ACT_NAMES = {"relusquared"}
-
-
 def _is_activation(mod):
-    """Leaf module, no parameters, likely an activation."""
     if type(mod) in _SKIP_ACTS:
         return False
 
@@ -57,8 +48,6 @@ def _is_activation(mod):
 
 
 def _make_plac(mod, target_mae):
-    """Build PLACFunc by probing the module's forward."""
-
     def fn(x):
         with torch.no_grad():
             return mod(x.float()).to(x.dtype)
@@ -78,17 +67,6 @@ class _PLACModule(nn.Module):
         return lib.plac_float(x.contiguous(), self.lut, self.x_lo_fix, self.shift)
 
 
-class _RMSNormInt(nn.Module):
-    def __init__(self, norm):
-        super().__init__()
-        gamma = torch.from_numpy(to_fixed(norm.weight.data.double().numpy()))
-        self.register_buffer("gamma_fix", gamma)
-
-    def forward(self, x):
-        lib = load_lib()
-        return lib.rmsnorm_float(x.contiguous(), self.gamma_fix)
-
-
 def _default_filter(mod, fqn):
     if _is_linear(mod):
         return "linear"
@@ -96,24 +74,19 @@ def _default_filter(mod, fqn):
     if _is_activation(mod):
         return "activation"
 
-    # integer norm disabled: Q16.16 precision loss compounds across layers
-    # if _is_rmsnorm(mod):
-    #     return "rmsnorm"
-
     return None
 
 
 def quantize(model, skip=None, target_mae=1e-2, filter_fn=None):
-    """
-    Quantize model in-place. Replaces linears, activations, norms.
+    """Quantize model in-place. Replaces linears and activations.
 
     skip: module name prefixes to leave in float (default: ["lm_head"])
-    filter_fn: fn(module, fqn) -> "linear"|"activation"|"rmsnorm"|None
+    filter_fn: fn(module, fqn) -> "linear"|"activation"|None
     """
     skip = skip or ["lm_head"]
     filter_fn = filter_fn or _default_filter
 
-    plac_cache = {}  # same function -> same LUT
+    plac_cache = {}
     replacements = {}
     skipped = []
     for name, mod in model.named_modules():
@@ -129,6 +102,7 @@ def quantize(model, skip=None, target_mae=1e-2, filter_fn=None):
                 replacements[name] = TernaryLinear(linear)
 
             else:
+                log.info("smelting %s %s", name, tuple(linear.weight.shape))
                 replacements[name] = DualTernaryLinear(linear)
 
         elif kind == "activation":
@@ -136,9 +110,6 @@ def quantize(model, skip=None, target_mae=1e-2, filter_fn=None):
             if cls not in plac_cache:
                 plac_cache[cls] = _make_plac(mod, target_mae)
             replacements[name] = _PLACModule(plac_cache[cls])
-
-        elif kind == "rmsnorm":
-            replacements[name] = _RMSNormInt(mod)
 
     for name, new_mod in replacements.items():
         model.set_submodule(name, new_mod)

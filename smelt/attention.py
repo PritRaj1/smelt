@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from ._clib import load_lib
+from .matmul import TernaryLinear, quantize_activations
 from .rope import rope_float
 
 
@@ -71,9 +72,19 @@ class Attention(nn.Module):
         bsz, seq, _ = x.shape
         hd = self.head_dim
 
-        q = self.q_proj(x).view(bsz, seq, self.n_heads, hd)
-        k = self.k_proj(x).view(bsz, seq, self.n_kv_heads, hd)
-        v = self.v_proj(x).view(bsz, seq, self.n_kv_heads, hd)
+        # shared quantize for Q/K/V if all are TernaryLinear
+        if all(isinstance(p, TernaryLinear) for p in [self.q_proj, self.k_proj, self.v_proj]):
+            x_2d = x.reshape(-1, x.size(-1)).contiguous()
+            x_i8, x_s = quantize_activations(x_2d)
+            x_i8 = x_i8.contiguous()
+            s = x_s.squeeze().item()
+            q = self.q_proj.forward_i8(x_i8, s).view(bsz, seq, self.n_heads, hd)
+            k = self.k_proj.forward_i8(x_i8, s).view(bsz, seq, self.n_kv_heads, hd)
+            v = self.v_proj.forward_i8(x_i8, s).view(bsz, seq, self.n_kv_heads, hd)
+        else:
+            q = self.q_proj(x).view(bsz, seq, self.n_heads, hd)
+            k = self.k_proj(x).view(bsz, seq, self.n_kv_heads, hd)
+            v = self.v_proj(x).view(bsz, seq, self.n_kv_heads, hd)
 
         if freqs is not None:
             cos, sin = freqs

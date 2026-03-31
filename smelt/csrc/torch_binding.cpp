@@ -143,6 +143,27 @@ torch::Tensor smelt_plac_float(torch::Tensor x, torch::Tensor lut, int x_lo, int
     return y_out.reshape(x.sizes());
 }
 
+// int8 in -> ternary GEMM -> rescale -> float out (skip quantize, for shared input)
+static torch::Tensor smelt_ternary_linear_i8(torch::Tensor x_i8, float act_scale, torch::Tensor w,
+                                             int n_padded, int n_pairs, int out_features,
+                                             float w_scale) {
+    int m = x_i8.size(0), k = x_i8.size(1);
+
+    auto y_int = torch::empty({m, n_padded}, torch::kInt32);
+    ternary_gemm(x_i8.data_ptr<int8_t>(), w.data_ptr<uint8_t>(), y_int.data_ptr<int32_t>(), m,
+                 n_padded, k, n_pairs);
+
+    auto y = torch::empty({m, out_features}, torch::kFloat32);
+    float s = w_scale / act_scale;
+    int32_t *src = y_int.data_ptr<int32_t>();
+    float *dst = y.data_ptr<float>();
+    for (int i = 0; i < m; i++)
+        for (int j = 0; j < out_features; j++)
+            dst[i * out_features + j] = (float)src[i * n_padded + j] * s;
+
+    return y;
+}
+
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("rmsnorm_float", &smelt_rmsnorm_float);
     m.def("plac_float", &smelt_plac_float);
@@ -153,6 +174,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("rmsnorm", &smelt_rmsnorm);
     m.def("layernorm", &smelt_layernorm);
 
+    m.def("ternary_linear_i8", &smelt_ternary_linear_i8);
     m.def("int8_gemm_t", [](torch::Tensor a, torch::Tensor b) {
         int m = a.size(0), n = b.size(0), k = a.size(1);
         auto c = torch::empty({m, n}, torch::kInt32);

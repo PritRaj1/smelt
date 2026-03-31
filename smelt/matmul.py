@@ -131,3 +131,19 @@ class TernaryLinear(nn.Module):
             y = y + self.bias
 
         return y.reshape(*orig_shape[:-1], self.out_features)
+
+    def forward_i8(self, x_i8, act_scale):
+        """Forward with pre-quantized int8 input to skip redundant quantize_act."""
+        lib = load_lib()
+        y = lib.ternary_linear_i8(
+            x_i8,
+            act_scale,
+            self.w_packed,
+            self.n_padded,
+            self.n_pairs,
+            self.out_features,
+            self.w_scale.item(),
+        )
+        if self.bias is not None:
+            y = y + self.bias
+        return y
