@@ -134,44 +134,26 @@ class PLACFunc:
         self._exps = torch.from_numpy(exps).contiguous()
 
     def __call__(self, x):
-        is_torch = isinstance(x, torch.Tensor)
-        if is_torch:
-            device, dtype = x.device, x.dtype
-            lib = load_lib()
-            return lib.plac_segments_float(
-                x.contiguous(),
-                self._breakpoints,
-                self._intercepts,
-                self._signs,
-                self._exps,
-                self.n_segments,
-            ).to(device=device, dtype=dtype)
-
-        x_t = torch.from_numpy(np.asarray(x, dtype=np.float32))
+        is_np = not isinstance(x, torch.Tensor)
+        if is_np:
+            x = torch.from_numpy(np.asarray(x, dtype=np.float32))
+        x_fix = torch.from_numpy(to_fixed(x.float().numpy())).contiguous()
         lib = load_lib()
-        y = lib.plac_segments_float(
-            x_t.contiguous(), self._breakpoints, self._intercepts,
-            self._signs, self._exps, self.n_segments,
+        y_fix = lib.plac_int32(
+            x_fix,
+            self._breakpoints,
+            self._intercepts,
+            self._signs,
+            self._exps,
+            self.n_segments,
         )
-        return y.numpy()
-
-    def eval_int32(self, x_int32):
-        lib = load_lib()
-        return lib.plac_segments_int32(
-            x_int32.contiguous(), self._breakpoints, self._intercepts,
-            self._signs, self._exps, self.n_segments,
-        )
+        y = y_fix.float() / SCALE
+        return y.numpy() if is_np else y.to(dtype=x.dtype)
 
     def max_error(self, f, n_samples=10000):
         x = np.linspace(self.breakpoints_f[0], self.breakpoints_f[-1], n_samples)
         y_ref = f(torch.tensor(x, dtype=torch.float64)).numpy()
         return np.max(np.abs(y_ref - self(x)))
-
-
-def relu2_int32(x):
-    """Squared ReLU in Q16.16: max(0, x)^2 >> FRAC."""
-    x = x.to(torch.int64).clamp(min=0)
-    return (x * x >> FRAC_BITS).to(torch.int32)
 
 
 def terms_to_str(terms):

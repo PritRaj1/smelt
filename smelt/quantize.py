@@ -66,11 +66,19 @@ class _PLACModule(nn.Module):
         self.n_segments = plac.n_segments
 
     def forward(self, x):
+        from .plac import SCALE, to_fixed
+
+        x_fix = torch.from_numpy(to_fixed(x.detach().float().numpy())).contiguous()
         lib = load_lib()
-        return lib.plac_segments_float(
-            x.contiguous(), self._breakpoints, self._intercepts,
-            self._signs, self._exps, self.n_segments,
+        y_fix = lib.plac_int32(
+            x_fix,
+            self._breakpoints,
+            self._intercepts,
+            self._signs,
+            self._exps,
+            self.n_segments,
         )
+        return (y_fix.float() / SCALE).to(dtype=x.dtype)
 
 
 class _Int8Linear(nn.Module):

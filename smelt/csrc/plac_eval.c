@@ -39,10 +39,10 @@ void plac_eval_segments(const int32_t *x, int32_t *y, int n, const int32_t *brea
         __m256i pos0 = _mm256_cmpgt_epi32(ve0, zero);
         __m256i pos1 = _mm256_cmpgt_epi32(ve1, zero);
 
-        __m256i sh0 = _mm256_blendv_epi8(_mm256_srav_epi32(vx, ae0),
-                                          _mm256_sllv_epi32(vx, ae0), pos0);
-        __m256i sh1 = _mm256_blendv_epi8(_mm256_srav_epi32(vx, ae1),
-                                          _mm256_sllv_epi32(vx, ae1), pos1);
+        __m256i sh0 =
+            _mm256_blendv_epi8(_mm256_srav_epi32(vx, ae0), _mm256_sllv_epi32(vx, ae0), pos0);
+        __m256i sh1 =
+            _mm256_blendv_epi8(_mm256_srav_epi32(vx, ae1), _mm256_sllv_epi32(vx, ae1), pos1);
 
         __m256i t0 = _mm256_sign_epi32(sh0, vs0);
         __m256i t1 = _mm256_sign_epi32(sh1, vs1);
@@ -55,7 +55,8 @@ void plac_eval_segments(const int32_t *x, int32_t *y, int n, const int32_t *brea
         int32_t val = x[jb];
         int seg = 0;
         for (int s = 1; s < n_segs; s++)
-            if (val > breakpoints[s]) seg = s;
+            if (val > breakpoints[s])
+                seg = s;
         int32_t result = intercepts[seg];
         for (int t = 0; t < 2; t++) {
             int e = exps[seg * 2 + t];

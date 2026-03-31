@@ -10,6 +10,9 @@ void rmsnorm_int_batched(const int32_t *, const int32_t *, int32_t *, int, int);
 void layernorm_int_batched(const int32_t *, const int32_t *, const int32_t *, int32_t *, int, int);
 void int8_gemm_t(const int8_t *, const int8_t *, int32_t *, int, int, int);
 void int8_batched_gemm_t(const int8_t *, const int8_t *, int32_t *, int, int, int, int);
+void int_rescale(const int32_t *, int32_t *, int, int32_t);
+void int_quantize(const int32_t *, int8_t *, int32_t *, int);
+void int_mul_q16(const int32_t *, const int32_t *, int32_t *, int);
 }
 
 torch::Tensor smelt_ternary_gemm(torch::Tensor x, torch::Tensor w, int n_padded, int n_pairs) {
@@ -42,7 +45,7 @@ torch::Tensor smelt_layernorm(torch::Tensor x, torch::Tensor gamma, torch::Tenso
     return y.reshape(x.sizes());
 }
 
-// per-row absmax quantize to int8, returns scale per row (127 / max)
+// per-row absmax quantize to int8 (float path)
 static void quantize_act(const float *x, int8_t *out, float *row_scale, int m, int k) {
     for (int i = 0; i < m; i++) {
         const float *row = x + i * k;
@@ -57,7 +60,6 @@ static void quantize_act(const float *x, int8_t *out, float *row_scale, int m, i
     }
 }
 
-// rescale int32 GEMM output to float: y_float = y_int * (w_scale / row_scale)
 static void rescale_output(const int32_t *y_int, float *y_out, const float *row_scale,
                            float w_scale, int m, int n_padded, int out_features) {
     for (int i = 0; i < m; i++) {
@@ -91,44 +93,6 @@ torch::Tensor smelt_ternary_linear(torch::Tensor x, torch::Tensor w, int n_padde
     return y;
 }
 
-static void float_to_fixed(const float *in, int32_t *out, int n) {
-    for (int i = 0; i < n; i++) {
-        double v = (double)in[i] * 65536.0;
-        out[i] = (int32_t)fmin(fmax(round(v), -(double)(1LL << 31)), (double)((1LL << 31) - 1));
-    }
-}
-
-static void fixed_to_float(const int32_t *in, float *out, int n) {
-    for (int i = 0; i < n; i++)
-        out[i] = (float)((double)in[i] / 65536.0);
-}
-
-torch::Tensor smelt_plac_segments_float(torch::Tensor x, torch::Tensor breakpoints,
-                                        torch::Tensor intercepts, torch::Tensor signs,
-                                        torch::Tensor exps, int n_segs) {
-    auto flat = x.reshape({-1}).contiguous();
-    int n = flat.numel();
-    auto x_fix = torch::empty({n}, torch::kInt32);
-    auto y_fix = torch::empty_like(x_fix);
-    auto y_out = torch::empty_like(flat);
-    float_to_fixed(flat.data_ptr<float>(), x_fix.data_ptr<int32_t>(), n);
-    plac_eval_segments(x_fix.data_ptr<int32_t>(), y_fix.data_ptr<int32_t>(), n,
-                       breakpoints.data_ptr<int32_t>(), intercepts.data_ptr<int32_t>(),
-                       signs.data_ptr<int32_t>(), exps.data_ptr<int32_t>(), n_segs);
-    fixed_to_float(y_fix.data_ptr<int32_t>(), y_out.data_ptr<float>(), n);
-    return y_out.reshape(x.sizes());
-}
-
-torch::Tensor smelt_plac_segments_int32(torch::Tensor x, torch::Tensor breakpoints,
-                                        torch::Tensor intercepts, torch::Tensor signs,
-                                        torch::Tensor exps, int n_segs) {
-    auto y = torch::empty_like(x);
-    plac_eval_segments(x.data_ptr<int32_t>(), y.data_ptr<int32_t>(), x.numel(),
-                       breakpoints.data_ptr<int32_t>(), intercepts.data_ptr<int32_t>(),
-                       signs.data_ptr<int32_t>(), exps.data_ptr<int32_t>(), n_segs);
-    return y;
-}
-
 // int8 in -> ternary GEMM -> rescale -> float out (skip quantize, for shared input)
 static torch::Tensor smelt_ternary_linear_i8(torch::Tensor x_i8, float act_scale, torch::Tensor w,
                                              int n_padded, int n_pairs, int out_features,
@@ -150,9 +114,48 @@ static torch::Tensor smelt_ternary_linear_i8(torch::Tensor x_i8, float act_scale
     return y;
 }
 
+// int32 GEMM output -> Q16.16: y[i] = x[i] * rescale
+torch::Tensor smelt_int_rescale(torch::Tensor x, int rescale) {
+    auto flat = x.reshape({-1}).contiguous();
+    auto y = torch::empty_like(flat);
+    int_rescale(flat.data_ptr<int32_t>(), y.data_ptr<int32_t>(), flat.numel(), rescale);
+    return y.reshape(x.sizes());
+}
+
+// Q16.16 -> int8 + scale (pure int absmax quantize)
+std::tuple<torch::Tensor, torch::Tensor> smelt_int_quantize(torch::Tensor x) {
+    auto x2 = x.reshape({-1, x.size(-1)}).contiguous();
+    int m = x2.size(0), n = x2.size(1);
+    auto out = torch::empty({m, n}, torch::kInt8);
+    auto scales = torch::empty({m}, torch::kInt32);
+    for (int i = 0; i < m; i++)
+        int_quantize(x2.data_ptr<int32_t>() + i * n, out.data_ptr<int8_t>() + i * n,
+                     scales.data_ptr<int32_t>() + i, n);
+    return {out.reshape(x.sizes()), scales};
+}
+
+// Q16.16 * Q16.16 -> Q16.16
+torch::Tensor smelt_int_mul(torch::Tensor a, torch::Tensor b) {
+    auto af = a.reshape({-1}).contiguous();
+    auto bf = b.reshape({-1}).contiguous();
+    auto y = torch::empty_like(af);
+    int_mul_q16(af.data_ptr<int32_t>(), bf.data_ptr<int32_t>(), y.data_ptr<int32_t>(), af.numel());
+    return y.reshape(a.sizes());
+}
+
+// PLAC on Q16.16 int32 directly (no float conversion)
+torch::Tensor smelt_plac_int32(torch::Tensor x, torch::Tensor breakpoints, torch::Tensor intercepts,
+                               torch::Tensor signs, torch::Tensor exps, int n_segs) {
+    auto flat = x.reshape({-1}).contiguous();
+    auto y = torch::empty_like(flat);
+    plac_eval_segments(flat.data_ptr<int32_t>(), y.data_ptr<int32_t>(), flat.numel(),
+                       breakpoints.data_ptr<int32_t>(), intercepts.data_ptr<int32_t>(),
+                       signs.data_ptr<int32_t>(), exps.data_ptr<int32_t>(), n_segs);
+    return y.reshape(x.sizes());
+}
+
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
-    m.def("plac_segments_float", &smelt_plac_segments_float);
-    m.def("plac_segments_int32", &smelt_plac_segments_int32);
+    m.def("plac_int32", &smelt_plac_int32);
     m.def("ternary_linear", &smelt_ternary_linear);
     m.def("ternary_gemm", &smelt_ternary_gemm);
     m.def("softmax", &smelt_softmax);
@@ -160,6 +163,10 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("layernorm", &smelt_layernorm);
 
     m.def("ternary_linear_i8", &smelt_ternary_linear_i8);
+    m.def("int_rescale", &smelt_int_rescale);
+    m.def("int_quantize", &smelt_int_quantize);
+    m.def("int_mul", &smelt_int_mul);
+
     m.def("int8_gemm_t", [](torch::Tensor a, torch::Tensor b) {
         int m = a.size(0), n = b.size(0), k = a.size(1);
         auto c = torch::empty({m, n}, torch::kInt32);
