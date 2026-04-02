@@ -76,26 +76,39 @@ def results_dict(model, tok, pp, tg, mem, dev):
     }
 
 
+def _rss():
+    return psutil.Process().memory_info().rss / 1e6
+
+
 def load_cpu(model_id, quantize=False, threads=None):
     torch.set_num_threads(threads or psutil.cpu_count(logical=False))
     gc.collect()
-    rss0 = psutil.Process().memory_info().rss
+    rss0 = _rss()
+    print(f"  loading model... (rss: {rss0:.0f} MB)", flush=True)
     model = AutoModelForCausalLM.from_pretrained(model_id, torch_dtype=torch.float32)
     model.eval()
+    print(f"  loaded (rss: {_rss():.0f} MB)", flush=True)
     if quantize:
         import smelt
 
+        print(f"  quantizing... (rss: {_rss():.0f} MB)", flush=True)
         smelt.quantize(model)
+        print(f"  quantized (rss: {_rss():.0f} MB)", flush=True)
 
     gc.collect()
-    mem = (psutil.Process().memory_info().rss - rss0) / 1e6
+    mem = _rss() - rss0
+    print(f"  after gc (rss: {_rss():.0f} MB, delta: {mem:.0f} MB)", flush=True)
     return model, mem, "cpu"
 
 
 def run_smelt(args):
     model, mem, dev = load_cpu(args.model, quantize=True, threads=args.threads)
     tok = AutoTokenizer.from_pretrained(args.model)
-    return results_dict(model, tok, args.pp, args.tg, mem, dev)
+    print(f"  running pp{args.pp}...", flush=True)
+    pp = bench_pp(model, tok, args.pp, dev)
+    print(f"  running tg{args.tg}...", flush=True)
+    tg = bench_tg(model, tok, args.tg, dev)
+    return {"pp_ts": pp, "tg_ts": tg, "mem_mb": mem}
 
 
 def run_hf_cpu(args):
@@ -107,13 +120,11 @@ def run_hf_cpu(args):
 def run_hf_gpu(args):
     torch.cuda.empty_cache()
     torch.cuda.reset_peak_memory_stats()
-
-    # BitNet stores uint8 weights. Must load float32, model handles dequant
-    model = AutoModelForCausalLM.from_pretrained(
-        args.model, torch_dtype=torch.float32, device_map="auto"
-    )
-
-    model.eval()
+    # load on CPU first, cast uint8 weights to float16, then move to GPU
+    model = AutoModelForCausalLM.from_pretrained(args.model, torch_dtype=torch.float32)
+    for p in model.parameters():
+        p.data = p.data.to(torch.float16)
+    model = model.cuda().eval()
     mem = torch.cuda.max_memory_allocated() / 1e6
     dev = next(model.parameters()).device
     tok = AutoTokenizer.from_pretrained(args.model)
