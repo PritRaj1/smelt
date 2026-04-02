@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 
 from ._clib import load_lib
+from .qtensor import SCALE, QTensor
 
 # shared quantize cache: if multiple TernaryLinears see the same input, quantize once
 _quant_cache = {"ptr": None, "i8": None, "scale": None}
@@ -111,36 +112,44 @@ class TernaryLinear(nn.Module):
         self.bias = linear.bias
 
     def forward(self, x):
-        orig_shape = x.shape
-        x_2d = x.reshape(-1, self.in_features).contiguous()
+        orig = x.shape
         lib = load_lib()
+        ws = self.w_scale.item()
 
+        # QTensor input: int quantize (pure int, no float conversion)
+        if isinstance(x, QTensor):
+            x_2d = x.int_data.reshape(-1, self.in_features).contiguous()
+            x_i8, mx = lib.int_quantize(x_2d)
+            rf = round(ws * mx.item() / 127.0)
+            y_i32 = lib.ternary_gemm(x_i8, self.w_packed, self.n_padded, self.n_pairs)
+            y_q16 = lib.int_rescale(y_i32[:, : self.out_features], rf)
+            if self.bias is not None:
+                y_q16 = y_q16 + (self.bias * SCALE).to(torch.int32)
+
+            return QTensor(y_q16.reshape(*orig[:-1], self.out_features))
+
+        # float input: existing path, return QTensor
+        x_2d = x.reshape(-1, self.in_features).contiguous()
         x_i8, act_scale = _get_cached_quant(x_2d)
 
-        # m=1 decode: use cached int8 + scalar scale (skip redundant quantize)
+        # m=1: scalar scale -> int rescale
         if act_scale is not None:
-            y = lib.ternary_linear_i8(
-                x_i8,
-                act_scale,
-                self.w_packed,
-                self.n_padded,
-                self.n_pairs,
-                self.out_features,
-                self.w_scale.item(),
-            )
+            y_i32 = lib.ternary_gemm(x_i8, self.w_packed, self.n_padded, self.n_pairs)
+            rf = round(ws / act_scale * SCALE)
+            y_q16 = lib.int_rescale(y_i32[:, : self.out_features], rf)
+            if self.bias is not None:
+                y_q16 = y_q16 + (self.bias * SCALE).to(torch.int32)
+            return QTensor(y_q16.reshape(*orig[:-1], self.out_features))
 
-        # m>1 prefill: per-row scales, use standard path
-        else:
-            y = lib.ternary_linear(
-                x_2d,
-                self.w_packed,
-                self.n_padded,
-                self.n_pairs,
-                self.out_features,
-                self.w_scale.item(),
-            )
-
+        # m>1: per-row float scales, use float path then wrap
+        y = lib.ternary_linear(
+            x_2d,
+            self.w_packed,
+            self.n_padded,
+            self.n_pairs,
+            self.out_features,
+            ws,
+        )
         if self.bias is not None:
             y = y + self.bias
-
-        return y.reshape(*orig_shape[:-1], self.out_features)
+        return QTensor((y * SCALE).to(torch.int32).reshape(*orig[:-1], self.out_features))
