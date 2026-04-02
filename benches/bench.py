@@ -107,9 +107,12 @@ def run_hf_cpu(args):
 def run_hf_gpu(args):
     torch.cuda.empty_cache()
     torch.cuda.reset_peak_memory_stats()
+
+    # BitNet stores uint8 weights. Must load float32, model handles dequant
     model = AutoModelForCausalLM.from_pretrained(
-        args.model, torch_dtype=torch.float16, device_map="auto"
+        args.model, torch_dtype=torch.float32, device_map="auto"
     )
+
     model.eval()
     mem = torch.cuda.max_memory_allocated() / 1e6
     dev = next(model.parameters()).device
