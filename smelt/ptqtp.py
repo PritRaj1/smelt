@@ -8,25 +8,27 @@ from .matmul import pack_tl1
 _C = torch.tensor([[-1, -1], [-1, 0], [-1, 1], [0, -1], [0, 0], [0, 1], [1, -1], [1, 0], [1, 1]])
 
 
-def quantize_ptqtp(w, max_iter=50, eps=1e-4, lam_init=1e-8):
-    """Decompose W into two trit planes via alternating ridge regression + discrete search."""
-    n, _d = w.shape
+def quantize_ptqtp(w, max_iter=30, eps=1e-4, lam_init=1e-8):
+    """Decompose W into two trit planes via alternating ridge + discrete search."""
+    n, d = w.shape
     w = w.float()
+    c = _C.to(w.device)
+    c1, c2 = c[:, 0].view(9, 1, 1), c[:, 1].view(9, 1, 1)
 
-    # T1 from absmean, T2 from residual
+    # init T1 from absmean, T2 from residual
     s1 = w.abs().mean(1, keepdim=True).clamp(min=1e-10)
     t1 = (w / s1).round().clamp(-1, 1).to(torch.int8)
     res = w - s1 * t1.float()
     s2 = res.abs().mean(1, keepdim=True).clamp(min=1e-10)
     t2 = (res / s2).round().clamp(-1, 1).to(torch.int8)
     al = torch.stack([s1.squeeze(1), s2.squeeze(1)], dim=1)
-    lam = torch.full((n,), lam_init)
+    lam = torch.full((n,), lam_init, device=w.device)
 
     for _ in range(max_iter):
         al_prev = al.clone()
         f1, f2 = t1.float(), t2.float()
 
-        # 2x2 Cramer's rule per row (faster than linalg.solve for 2x2)
+        # ridge regression (full row)
         s1s1, s2s2, s1s2 = (f1 * f1).sum(1), (f2 * f2).sum(1), (f1 * f2).sum(1)
         s1w, s2w = (f1 * w).sum(1), (f2 * w).sum(1)
         a00, a01, a11 = s1s1 + lam, s1s2, s2s2 + lam
@@ -37,13 +39,16 @@ def quantize_ptqtp(w, max_iter=50, eps=1e-4, lam_init=1e-8):
         kappa = (a00 + a11).square() / (4 * det)
         lam = torch.where(kappa > 1e6, (lam * 10).clamp(max=1.0), lam)
 
-        # vectorized 9-way search
-        c = _C.to(w.device)
-        c1, c2 = c[:, 0].view(9, 1, 1), c[:, 1].view(9, 1, 1)
-        err = (w.unsqueeze(0) - al[:, 0:1] * c1 - al[:, 1:2] * c2).square()
-        best = err.argmin(0)
-        t1 = c[best, 0].to(torch.int8)
-        t2 = c[best, 1].to(torch.int8)
+        # 9-way discrete search in column chunks to bound memory
+        al0 = al[:, 0:1]
+        al1 = al[:, 1:2]
+        for g0 in range(0, d, 256):
+            g1 = min(g0 + 256, d)
+            wg = w[:, g0:g1]
+            err = (wg.unsqueeze(0) - al0 * c1 - al1 * c2).square()
+            best = err.argmin(0)
+            t1[:, g0:g1] = c[best, 0].to(torch.int8)
+            t2[:, g0:g1] = c[best, 1].to(torch.int8)
 
         if (al - al_prev).abs().max() < eps:
             break
@@ -56,7 +61,12 @@ class DualTernaryLinear(nn.Module):
 
     def __init__(self, linear):
         super().__init__()
-        t1, t2, a1, a2 = quantize_ptqtp(linear.weight.data)
+        wd = linear.weight.data
+        if torch.cuda.is_available():
+            wd = wd.cuda()
+
+        t1, t2, a1, a2 = quantize_ptqtp(wd)
+        t1, t2, a1, a2 = t1.cpu(), t2.cpu(), a1.cpu(), a2.cpu()
 
         p1, np1, npad1 = pack_tl1(t1)
         p2, _, _ = pack_tl1(t2)

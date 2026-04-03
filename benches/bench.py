@@ -4,7 +4,7 @@ One method per run (fresh process). Appends to JSON.
 
     python benches/bench.py run -m smelt --model microsoft/bitnet-b1.58-2B-4T
     python benches/bench.py run -m hf-gpu --model microsoft/bitnet-b1.58-2B-4T
-    python benches/bench.py plot bench_results.json -o benchmark.png
+    python benches/bench.py plot benches/bench_results.json
 """
 
 import argparse
@@ -76,37 +76,25 @@ def results_dict(model, tok, pp, tg, mem, dev):
     }
 
 
-def _rss():
-    return psutil.Process().memory_info().rss / 1e6
-
-
 def load_cpu(model_id, quantize=False, threads=None):
     torch.set_num_threads(threads or psutil.cpu_count(logical=False))
     gc.collect()
-    rss0 = _rss()
-    print(f"  loading model... (rss: {rss0:.0f} MB)", flush=True)
+    rss0 = psutil.Process().memory_info().rss / 1e6
     model = AutoModelForCausalLM.from_pretrained(model_id, torch_dtype=torch.float32)
     model.eval()
-    print(f"  loaded (rss: {_rss():.0f} MB)", flush=True)
     if quantize:
         import smelt
-
-        print(f"  quantizing... (rss: {_rss():.0f} MB)", flush=True)
         smelt.quantize(model)
-        print(f"  quantized (rss: {_rss():.0f} MB)", flush=True)
 
     gc.collect()
-    mem = _rss() - rss0
-    print(f"  after gc (rss: {_rss():.0f} MB, delta: {mem:.0f} MB)", flush=True)
+    mem = psutil.Process().memory_info().rss / 1e6 - rss0
     return model, mem, "cpu"
 
 
 def run_smelt(args):
     model, mem, dev = load_cpu(args.model, quantize=True, threads=args.threads)
     tok = AutoTokenizer.from_pretrained(args.model)
-    print(f"  running pp{args.pp}...", flush=True)
     pp = bench_pp(model, tok, args.pp, dev)
-    print(f"  running tg{args.tg}...", flush=True)
     tg = bench_tg(model, tok, args.tg, dev)
     return {"pp_ts": pp, "tg_ts": tg, "mem_mb": mem}
 
@@ -215,11 +203,11 @@ def main():
     run.add_argument("-p", "--pp", type=int, default=512)
     run.add_argument("-n", "--tg", type=int, default=128)
     run.add_argument("-t", "--threads", type=int, default=None)
-    run.add_argument("-o", "--output", default="bench_results.json")
+    run.add_argument("-o", "--output", default="benches/bench_results.json")
 
     plot = sub.add_parser("plot")
     plot.add_argument("plot", help="path to bench_results.json")
-    plot.add_argument("-o", "--out", default="benchmark.png")
+    plot.add_argument("-o", "--out", default="benches/benchmark.png")
 
     args = p.parse_args()
     if args.cmd == "run":
