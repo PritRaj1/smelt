@@ -12,7 +12,8 @@ from transformers import AutoModelForCausalLM
 
 model = AutoModelForCausalLM.from_pretrained("microsoft/bitnet-b1.58-2B-4T")
 smelt.quantize(model)
-model = torch.compile(model)  # recommended, fuses surrounding ops + removes redundant conversions
+model.generation_config.cache_implementation = "static"
+model.forward = torch.compile(model.forward, fullgraph=True)
 model.generate(...)
 ```
 
@@ -36,7 +37,7 @@ quantize_to_1bit("checkpoint/", "checkpoint_1bit/")
 # 3. smelt for CPU inference
 model = AutoModelForCausalLM.from_pretrained("checkpoint_1bit/")
 smelt.quantize(model)
-model = torch.compile(model)
+model.forward = torch.compile(model.forward, fullgraph=True)
 ```
 
 ## Install

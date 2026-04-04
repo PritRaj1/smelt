@@ -31,6 +31,10 @@
 
 - [Intel Guide (AVX2 one)](https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html)
 
+## Integer Attention
+
+- [SageAttention: PTQ int8 QK^T with K-smoothing (ICLR 2025)](https://arxiv.org/abs/2410.02367)
+
 ## KV Cache Quantization
 
 - [TurboQuant](https://arxiv.org/abs/2504.19874)
