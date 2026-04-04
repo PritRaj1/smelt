@@ -19,9 +19,22 @@ import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 
+def _cpu_name():
+    try:
+        with open("/proc/cpuinfo") as f:
+            for line in f:
+                if line.startswith("model name"):
+                    return line.split(":")[1].strip()
+
+    except OSError:
+        pass
+
+    return platform.processor() or platform.machine()
+
+
 def hw_info():
     info = {
-        "cpu": platform.processor() or platform.machine(),
+        "cpu": _cpu_name(),
         "cores": psutil.cpu_count(logical=False),
         "ram_gb": round(psutil.virtual_memory().total / 1e9, 1),
     }
@@ -109,10 +122,12 @@ def run_hf_cpu(args):
 def run_hf_gpu(args):
     torch.cuda.empty_cache()
     torch.cuda.reset_peak_memory_stats()
+
     # load on CPU first, cast uint8 weights to float16, then move to GPU
     model = AutoModelForCausalLM.from_pretrained(args.model, torch_dtype=torch.float32)
     for p in model.parameters():
         p.data = p.data.to(torch.float16)
+
     model = model.cuda().eval()
     mem = torch.cuda.max_memory_allocated() / 1e6
     dev = next(model.parameters()).device
@@ -163,7 +178,8 @@ def do_plot(args):
         for d in data
     ]
 
-    _fig, axes = plt.subplots(1, 3, figsize=(16, 4))
+    n = len(data)
+    _fig, axes = plt.subplots(3, 1, figsize=(10, 2.2 * n + 1))
     for ax, key, title in [
         (axes[0], "pp_ts", f"Prefill (pp{data[0]['pp']}) tok/s"),
         (axes[1], "tg_ts", f"Decode (tg{data[0]['tg']}) tok/s"),
@@ -183,7 +199,7 @@ def do_plot(args):
         ax.invert_yaxis()
 
     name = data[0]["model"].split("/")[-1]
-    plt.suptitle(name, fontsize=12, y=1.02)
+    plt.suptitle(name, fontsize=12)
     plt.tight_layout()
     plt.savefig(Path(args.out), dpi=150, bbox_inches="tight")
     print(f"saved {args.out}")

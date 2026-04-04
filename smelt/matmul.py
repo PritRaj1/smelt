@@ -78,6 +78,9 @@ def quantize_activations(x):
 
 def _get_cached_quant(x_2d):
     """Return cached (int8, scale) if same tensor. Scale is scalar for m=1, None for m>1."""
+    if torch.compiler.is_compiling():
+        return None, None
+
     ptr = x_2d.data_ptr()
     if _quant_cache["ptr"] == ptr:
         return _quant_cache["i8"], _quant_cache["scale"]
@@ -86,7 +89,7 @@ def _get_cached_quant(x_2d):
     x_i8 = x_i8.contiguous()
     _quant_cache["ptr"] = ptr
     _quant_cache["i8"] = x_i8
-    _quant_cache["scale"] = x_s.squeeze().item() if x_2d.size(0) == 1 else None
+    _quant_cache["scale"] = x_s.squeeze() if x_2d.size(0) == 1 else None
     return x_i8, _quant_cache["scale"]
 
 
@@ -122,8 +125,9 @@ class TernaryLinear(nn.Module):
                 self.n_padded,
                 self.n_pairs,
                 self.out_features,
-                self.w_scale.item(),
+                self.w_scale,
             )
+
         else:
             y = ops.ternary_linear(
                 x_2d,
@@ -131,7 +135,7 @@ class TernaryLinear(nn.Module):
                 self.n_padded,
                 self.n_pairs,
                 self.out_features,
-                self.w_scale.item(),
+                self.w_scale,
             )
 
         if self.bias is not None:

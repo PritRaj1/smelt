@@ -74,6 +74,7 @@ class DualTernaryLinear(nn.Module):
         self.register_buffer("w2", p2.contiguous())
         self.register_buffer("a1", a1.float())
         self.register_buffer("a2", a2.float())
+        self.register_buffer("_ws", torch.tensor(1.0))
         self.n_pairs = np1
         self.n_padded = npad1
         self.in_features = linear.in_features
@@ -84,8 +85,24 @@ class DualTernaryLinear(nn.Module):
         orig = x.shape
         x_2d = x.reshape(-1, self.in_features).contiguous()
         ops = torch.ops.smelt
-        y1 = ops.ternary_linear(x_2d, self.w1, self.n_padded, self.n_pairs, self.out_features, 1.0)
-        y2 = ops.ternary_linear(x_2d, self.w2, self.n_padded, self.n_pairs, self.out_features, 1.0)
+        y1 = ops.ternary_linear(
+            x_2d,
+            self.w1,
+            self.n_padded,
+            self.n_pairs,
+            self.out_features,
+            self._ws,
+        )
+
+        y2 = ops.ternary_linear(
+            x_2d,
+            self.w2,
+            self.n_padded,
+            self.n_pairs,
+            self.out_features,
+            self._ws,
+        )
+
         y = y1 * self.a1 + y2 * self.a2
 
         if self.bias is not None:

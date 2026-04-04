@@ -6,11 +6,11 @@ lib = torch.library.Library("smelt", "DEF")
 
 lib.define(
     "ternary_linear(Tensor x, Tensor w, int n_padded, int n_pairs,"
-    " int out_features, float w_scale) -> Tensor"
+    " int out_features, Tensor w_scale) -> Tensor"
 )
 lib.define(
-    "ternary_linear_i8(Tensor x_i8, float act_scale, Tensor w,"
-    " int n_padded, int n_pairs, int out_features, float w_scale) -> Tensor"
+    "ternary_linear_i8(Tensor x_i8, Tensor act_scale, Tensor w,"
+    " int n_padded, int n_pairs, int out_features, Tensor w_scale) -> Tensor"
 )
 lib.define(
     "plac_int32(Tensor x, Tensor bp, Tensor ic, Tensor signs, Tensor exps, int n_segs) -> Tensor"
