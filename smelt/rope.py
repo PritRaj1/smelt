@@ -1,6 +1,6 @@
 import torch
 
-FRAC = 16
+from .plac import FRAC_BITS as FRAC
 
 
 def _angles(dim, max_seq_len, theta=10000.0):

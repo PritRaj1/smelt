@@ -84,6 +84,7 @@ def load_cpu(model_id, quantize=False, threads=None):
     model.eval()
     if quantize:
         import smelt
+
         smelt.quantize(model)
 
     gc.collect()

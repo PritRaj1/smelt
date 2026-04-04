@@ -3306,7 +3306,8 @@ dependencies = [
 
 [package.optional-dependencies]
 bench = [
-    { name = "llama-cpp-python" },
+    { name = "matplotlib" },
+    { name = "psutil" },
 ]
 notebooks = [
     { name = "jupyter" },
@@ -3320,29 +3321,34 @@ train = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "llama-cpp-python" },
+    { name = "psutil" },
     { name = "pytest" },
     { name = "ruff" },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "accelerate", specifier = ">=0.20" },
+    { name = "accelerate", specifier = ">=0.26" },
     { name = "datasets", marker = "extra == 'train'", specifier = ">=2.14" },
     { name = "jupyter", marker = "extra == 'notebooks'" },
-    { name = "llama-cpp-python", marker = "extra == 'bench'", specifier = ">=0.2" },
+    { name = "matplotlib", marker = "extra == 'bench'" },
     { name = "matplotlib", marker = "extra == 'notebooks'", specifier = ">=3.7" },
     { name = "ninja" },
     { name = "numpy", specifier = ">=1.26" },
     { name = "onebitllms", marker = "extra == 'train'" },
+    { name = "psutil", marker = "extra == 'bench'" },
     { name = "safetensors", specifier = ">=0.4" },
     { name = "torch", specifier = ">=2.1" },
-    { name = "transformers", specifier = ">=4.36" },
+    { name = "transformers", specifier = ">=4.51" },
     { name = "trl", marker = "extra == 'train'", specifier = ">=1.0" },
 ]
 provides-extras = ["train", "bench", "notebooks"]
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "llama-cpp-python", specifier = ">=0.3" },
+    { name = "psutil" },
     { name = "pytest", specifier = ">=8.0" },
     { name = "ruff", specifier = ">=0.9" },
 ]

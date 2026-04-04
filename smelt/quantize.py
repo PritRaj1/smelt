@@ -5,9 +5,8 @@ import torch.nn as nn
 
 from ._clib import load_lib
 from .matmul import TernaryLinear, _is_already_ternary, quantize_activations
-from .plac import PLACFunc
+from .plac import SCALE, PLACFunc
 from .ptqtp import DualTernaryLinear
-from .qtensor import SCALE, QTensor
 
 log = logging.getLogger(__name__)
 
@@ -18,6 +17,7 @@ _SKIP_ACT_NAMES = {"relusquared"}
 def _is_linear(mod):
     if isinstance(mod, nn.Linear):
         return True
+
     return type(mod).__name__ == "Conv1D" and hasattr(mod, "nf")
 
 
@@ -32,12 +32,16 @@ def _conv1d_to_linear(mod):
 def _is_activation(mod):
     if type(mod) in _SKIP_ACTS:
         return False
+
     if any(s in type(mod).__name__.lower() for s in _SKIP_ACT_NAMES):
         return False
+
     if len(list(mod.children())) > 0:
         return False
+
     if len(list(mod.parameters())) > 0:
         return False
+
     name = type(mod).__name__.lower()
     keys = ("activation", "silu", "gelu", "sigmoid", "tanh", "swish", "relu")
     return any(k in name for k in keys)
@@ -72,9 +76,6 @@ class _PLACModule(nn.Module):
         )
 
     def forward(self, x):
-        if isinstance(x, QTensor):
-            return QTensor(self._eval_int(x.int_data))
-
         x_q16 = (x.detach().float() * SCALE).to(torch.int32)
         y_q16 = self._eval_int(x_q16)
         return (y_q16.float() / SCALE).to(dtype=x.dtype)
@@ -101,14 +102,17 @@ class _Int8Linear(nn.Module):
         y = y_int.float() / (self.w_scale * x_s)
         if self.bias is not None:
             y = y + self.bias
+
         return y.reshape(*orig[:-1], self.out_features)
 
 
 def _default_filter(mod, fqn):
     if _is_linear(mod):
         return "linear"
+
     if _is_activation(mod):
         return "activation"
+
     return None
 
 
@@ -137,6 +141,7 @@ def quantize(model, skip=None, target_mae=1e-2, filter_fn=None):
             linear = _conv1d_to_linear(mod) if not isinstance(mod, nn.Linear) else mod
             if _is_already_ternary(linear.weight.data.float()):
                 replacements[name] = TernaryLinear(linear)
+
             else:
                 replacements[name] = DualTernaryLinear(linear)
 
@@ -144,6 +149,7 @@ def quantize(model, skip=None, target_mae=1e-2, filter_fn=None):
             cls = type(mod).__name__
             if cls not in plac_cache:
                 plac_cache[cls] = _make_plac(mod, target_mae)
+
             replacements[name] = _PLACModule(plac_cache[cls])
 
     for name, new_mod in replacements.items():
