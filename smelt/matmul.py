@@ -1,8 +1,6 @@
 import torch
 import torch.nn as nn
 
-from ._clib import load_lib
-
 # shared quantize cache: if multiple TernaryLinears see the same input, quantize once
 _quant_cache = {"ptr": None, "i8": None, "scale": None}
 
@@ -113,12 +111,11 @@ class TernaryLinear(nn.Module):
     def forward(self, x):
         orig_shape = x.shape
         x_2d = x.reshape(-1, self.in_features).contiguous()
-        lib = load_lib()
-
         x_i8, act_scale = _get_cached_quant(x_2d)
+        ops = torch.ops.smelt
 
         if act_scale is not None:
-            y = lib.ternary_linear_i8(
+            y = ops.ternary_linear_i8(
                 x_i8,
                 act_scale,
                 self.w_packed,
@@ -127,9 +124,8 @@ class TernaryLinear(nn.Module):
                 self.out_features,
                 self.w_scale.item(),
             )
-
         else:
-            y = lib.ternary_linear(
+            y = ops.ternary_linear(
                 x_2d,
                 self.w_packed,
                 self.n_padded,
@@ -140,5 +136,4 @@ class TernaryLinear(nn.Module):
 
         if self.bias is not None:
             y = y + self.bias
-
         return y.reshape(*orig_shape[:-1], self.out_features)

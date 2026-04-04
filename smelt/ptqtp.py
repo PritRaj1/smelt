@@ -1,7 +1,6 @@
 import torch
 import torch.nn as nn
 
-from ._clib import load_lib
 from .matmul import pack_tl1
 
 # all 9 (c1, c2) combos for discrete search
@@ -84,10 +83,9 @@ class DualTernaryLinear(nn.Module):
     def forward(self, x):
         orig = x.shape
         x_2d = x.reshape(-1, self.in_features).contiguous()
-        lib = load_lib()
-
-        y1 = lib.ternary_linear(x_2d, self.w1, self.n_padded, self.n_pairs, self.out_features, 1.0)
-        y2 = lib.ternary_linear(x_2d, self.w2, self.n_padded, self.n_pairs, self.out_features, 1.0)
+        ops = torch.ops.smelt
+        y1 = ops.ternary_linear(x_2d, self.w1, self.n_padded, self.n_pairs, self.out_features, 1.0)
+        y2 = ops.ternary_linear(x_2d, self.w2, self.n_padded, self.n_pairs, self.out_features, 1.0)
         y = y1 * self.a1 + y2 * self.a2
 
         if self.bias is not None:

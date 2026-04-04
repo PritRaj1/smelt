@@ -2,19 +2,17 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from ._clib import load_lib
 from .matmul import quantize_activations
 from .rope import rope_float
 
 
 def _int8_qkt(q_i8, k_i8):
     """Batched QK^T via int8 GEMM."""
-    lib = load_lib()
     bsz, nh, seq, hd = q_i8.shape
     kv_len = k_i8.size(2)
     q_flat = q_i8.reshape(bsz * nh, seq, hd).contiguous()
     k_flat = k_i8.reshape(bsz * nh, kv_len, hd).contiguous()
-    return lib.int8_batched_gemm_t(q_flat, k_flat).view(bsz, nh, seq, kv_len)
+    return torch.ops.smelt.int8_batched_gemm_t(q_flat, k_flat).view(bsz, nh, seq, kv_len)
 
 
 class KVCache:

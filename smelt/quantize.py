@@ -3,7 +3,6 @@ import logging
 import torch
 import torch.nn as nn
 
-from ._clib import load_lib
 from .matmul import TernaryLinear, _is_already_ternary, quantize_activations
 from .plac import SCALE, PLACFunc
 from .ptqtp import DualTernaryLinear
@@ -65,8 +64,7 @@ class _PLACModule(nn.Module):
         self.n_segments = plac.n_segments
 
     def _eval_int(self, x_q16):
-        lib = load_lib()
-        return lib.plac_int32(
+        return torch.ops.smelt.plac_int32(
             x_q16.contiguous(),
             self._breakpoints,
             self._intercepts,
@@ -97,8 +95,7 @@ class _Int8Linear(nn.Module):
         orig = x.shape
         x_2d = x.reshape(-1, self.in_features)
         x_i8, x_s = quantize_activations(x_2d)
-        lib = load_lib()
-        y_int = lib.int8_gemm_t(x_i8.contiguous(), self.w_i8)
+        y_int = torch.ops.smelt.int8_gemm_t(x_i8.contiguous(), self.w_i8)
         y = y_int.float() / (self.w_scale * x_s)
         if self.bias is not None:
             y = y + self.bias

@@ -3,8 +3,6 @@ import math
 import numpy as np
 import torch
 
-from ._clib import load_lib
-
 FRAC_BITS = 16
 SCALE = 1 << FRAC_BITS
 
@@ -138,8 +136,7 @@ class PLACFunc:
         if is_np:
             x = torch.from_numpy(np.asarray(x, dtype=np.float32))
         x_fix = torch.from_numpy(to_fixed(x.float().numpy())).contiguous()
-        lib = load_lib()
-        y_fix = lib.plac_int32(
+        y_fix = torch.ops.smelt.plac_int32(
             x_fix,
             self._breakpoints,
             self._intercepts,
