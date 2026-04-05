@@ -3,6 +3,7 @@ import logging
 import torch
 import torch.nn as nn
 
+from .attention import register_attention
 from .matmul import TernaryLinear, _is_already_ternary, quantize_activations
 from .plac import SCALE, PLACFunc
 from .ptqtp import DualTernaryLinear
@@ -152,7 +153,12 @@ def quantize(model, skip=None, target_mae=1e-2, filter_fn=None):
     for name, new_mod in replacements.items():
         model.set_submodule(name, new_mod)
 
-    # report what was converted and what stayed float
+    register_attention()
+    has_qkv = any(hasattr(m, "q_proj") for m in model.modules())
+    can_set = hasattr(model, "config") and hasattr(model.config, "_attn_implementation")
+    if has_qkv and can_set:
+        model.config._attn_implementation = "smelt"
+
     counts = {}
     for r in replacements.values():
         k = type(r).__name__
