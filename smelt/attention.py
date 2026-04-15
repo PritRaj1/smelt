@@ -47,26 +47,31 @@ def smelt_attention_forward(module, query, key, value, attention_mask, scaling, 
     if attention_mask is not None:
         scores_q16 = scores_q16.masked_fill(attention_mask < -1.0, MASK_NEG)
 
-    # int softmax -> int8 attn weights
+    # int softmax
     attn_q16 = torch.ops.smelt.softmax(scores_q16)
-    attn_i8, attn_mx = torch.ops.smelt.int_quantize(attn_q16.reshape(-1, kv_len))
 
-    # int8 softmax(QK^T) * V (per-tensor: one scale factors out of the sum)
-    v_abs = value.abs().amax().clamp(min=1e-5)
-    v_i8 = (value * (127.0 / v_abs)).round().clamp(-128, 127).to(torch.int8)
+    # per-token V quant, scale folded into attn before int8 AV matmul
+    v_i8, v_s = quantize_activations(value.reshape(-1, hd))
+    v_i8 = v_i8.view(bsz, nh, kv_len, hd)
+    v_dq = (1.0 / v_s.float().squeeze(1)).view(bsz, nh, 1, kv_len)
+
+    attn_adj = (attn_q16.float() / 65536.0) * v_dq
+    attn_i8, attn_s = quantize_activations(attn_adj.reshape(-1, kv_len))
+
     av_i32 = torch.ops.smelt.int8_batched_gemm_t(
         attn_i8.view(bsz * nh, seq, kv_len).contiguous(),
         v_i8.reshape(bsz * nh, kv_len, hd).transpose(1, 2).contiguous(),
     )
 
-    # final float: real = av_i32 * attn_mx * v_abs / (127^2 * 65536)
-    rescale = attn_mx.view(bsz, nh, seq, 1).float() * (v_abs / (127.0 * 127.0 * 65536.0))
+    # v_scale absorbed into attn, undo attn quantization only
+    rescale = (1.0 / attn_s).view(bsz, nh, seq, 1)
     out = (av_i32.view(bsz, nh, seq, hd).float() * rescale).to(value.dtype)
     return out.transpose(1, 2).contiguous(), None
 
 
 def register_attention():
     from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
+
     ALL_ATTENTION_FUNCTIONS["smelt"] = smelt_attention_forward
 
 

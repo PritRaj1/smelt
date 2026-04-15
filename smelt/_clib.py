@@ -20,7 +20,6 @@ def load_lib():
             str(_CSRC_DIR / "softmax_int.c"),
             str(_CSRC_DIR / "norm_int.c"),
             str(_CSRC_DIR / "int8_gemm.c"),
-            str(_CSRC_DIR / "int_ops.c"),
         ],
         extra_cflags=["-O3", "-march=native", "-fopenmp"],
         extra_ldflags=["-lgomp"],

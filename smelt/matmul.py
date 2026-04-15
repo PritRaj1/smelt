@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 
 # shared quantize cache: if multiple TernaryLinears see the same input, quantize once
-_quant_cache = {"ptr": None, "i8": None, "scale": None}
+_quant_cache = {"key": None, "i8": None, "scale": None}
 
 
 def _is_already_ternary(w):
@@ -76,18 +76,22 @@ def quantize_activations(x):
     return x_q, scale
 
 
-def _get_cached_quant(x_2d):
-    """Return cached (int8, scale) if same tensor. Scale is scalar for m=1, None for m>1."""
+def _get_cached_quant(x_2d, cache_key):
+    """
+    Return cached (int8, scale) if same input. Scale is scalar for m=1, None for m>1.
+
+    cache_key: (data_ptr, shape) of the original tensor *before* reshape/contiguous,
+    so the cache survives views and contiguous copies of the same data.
+    """
     if torch.compiler.is_compiling():
         return None, None
 
-    ptr = x_2d.data_ptr()
-    if _quant_cache["ptr"] == ptr:
+    if _quant_cache["key"] == cache_key:
         return _quant_cache["i8"], _quant_cache["scale"]
 
     x_i8, x_s = quantize_activations(x_2d)
     x_i8 = x_i8.contiguous()
-    _quant_cache["ptr"] = ptr
+    _quant_cache["key"] = cache_key
     _quant_cache["i8"] = x_i8
     _quant_cache["scale"] = x_s.squeeze() if x_2d.size(0) == 1 else None
     return x_i8, _quant_cache["scale"]
@@ -113,8 +117,9 @@ class TernaryLinear(nn.Module):
 
     def forward(self, x):
         orig_shape = x.shape
+        cache_key = (x.data_ptr(), x.shape)  # key before reshape/contiguous
         x_2d = x.reshape(-1, self.in_features).contiguous()
-        x_i8, act_scale = _get_cached_quant(x_2d)
+        x_i8, act_scale = _get_cached_quant(x_2d, cache_key)
         ops = torch.ops.smelt
 
         if act_scale is not None:

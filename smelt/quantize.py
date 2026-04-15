@@ -182,3 +182,105 @@ def quantize(model, skip=None, target_mae=1e-2, filter_fn=None):
         log.info("skipped: %s", ", ".join(skipped))
 
     return model
+
+
+# SERIALIZE TO/FROM FILE
+
+_META_ATTRS = {
+    "TernaryLinear": ["in_features", "out_features", "n_pairs", "n_padded"],
+    "DualTernaryLinear": ["in_features", "out_features", "n_pairs", "n_padded"],
+    "_PLACModule": ["n_segments"],
+    "_Int8Linear": ["in_features", "out_features"],
+}
+
+_BUFFER_SPECS = {
+    "TernaryLinear": [("w_packed", torch.uint8), ("w_scale", torch.float32)],
+    "DualTernaryLinear": [
+        ("w1", torch.uint8),
+        ("w2", torch.uint8),
+        ("a1", torch.float32),
+        ("a2", torch.float32),
+        ("_ws", torch.float32),
+    ],
+    "_PLACModule": [
+        ("_breakpoints", torch.int32),
+        ("_intercepts", torch.int32),
+        ("_signs", torch.int32),
+        ("_exps", torch.int32),
+    ],
+    "_Int8Linear": [("w_i8", torch.int8), ("w_scale", torch.float32)],
+}
+
+_TYPE_MAP = {
+    "TernaryLinear": TernaryLinear,
+    "DualTernaryLinear": DualTernaryLinear,
+    "_PLACModule": _PLACModule,
+    "_Int8Linear": _Int8Linear,
+}
+
+
+def save_quantized(model, path):
+    """Save model: state_dict + module manifest."""
+    manifest = {}
+    for fqn, mod in model.named_modules():
+        type_name = type(mod).__name__
+        if type_name not in _META_ATTRS:
+            continue
+
+        meta = {"type": type_name}
+        for attr in _META_ATTRS[type_name]:
+            meta[attr] = getattr(mod, attr)
+
+        if hasattr(mod, "bias"):
+            meta["has_bias"] = mod.bias is not None
+        manifest[fqn] = meta
+
+    torch.save(
+        {
+            "state_dict": model.state_dict(),
+            "manifest": manifest,
+            "smelt_attn": getattr(getattr(model, "config", None), "_attn_implementation", None)
+            == "smelt",
+        },
+        path,
+    )
+    log.info("saved %d quantized modules to %s", len(manifest), path)
+
+
+def load_quantized(model, path):
+    """Load weights into base model, replacing modules per manifest."""
+    data = torch.load(path, weights_only=True)
+
+    for fqn, meta in data["manifest"].items():
+        type_name = meta["type"]
+        cls = _TYPE_MAP[type_name]
+        shell = cls.__new__(cls)
+        nn.Module.__init__(shell)
+        for attr in _META_ATTRS[type_name]:
+            setattr(shell, attr, meta[attr])
+
+        for buf_name, dtype in _BUFFER_SPECS[type_name]:
+            shell.register_buffer(buf_name, torch.empty(0, dtype=dtype))
+
+        if meta.get("has_bias"):
+            shell.bias = nn.Parameter(torch.empty(0))
+
+        elif "has_bias" in meta:
+            shell.bias = None
+
+        model.set_submodule(fqn, shell)
+
+    for key, val in data["state_dict"].items():
+        *parts, attr = key.split(".")
+        mod = model
+        for p in parts:
+            mod = getattr(mod, p)
+        setattr(mod, attr, nn.Parameter(val) if attr in mod._parameters else val)
+
+    if data.get("smelt_attn"):
+        register_attention()
+        if hasattr(model, "config"):
+            model.config._attn_implementation = "smelt"
+
+    log.info("loaded %d quantized modules from %s", len(data["manifest"]), path)
+    return model

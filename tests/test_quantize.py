@@ -57,3 +57,19 @@ def test_skip():
 
     assert isinstance(model.model.layers[0].self_attn.q_proj, torch.nn.Linear)
     assert isinstance(model.model.layers[1].self_attn.q_proj, _QUANTIZED)
+
+
+def test_save_load_roundtrip(tmp_path):
+    model = _MODELS["bitnet"]()
+    smelt.quantize(model)
+    x = torch.randint(0, 1000, (1, 16))
+    y_before = model(x).logits
+
+    path = tmp_path / "model.pt"
+    smelt.save_quantized(model, path)
+
+    fresh = _MODELS["bitnet"]()
+    smelt.load_quantized(fresh, path)
+    y_after = fresh(x).logits
+
+    assert torch.equal(y_before, y_after)
